@@ -1,0 +1,28 @@
+[package]
+name = "stake_aggregate"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+anyhow = "1.0.71"
+borsh = "0.10.3"
+bs58 = "0.4.0"
+futures = { version = "0.3.28", default-features = false }
+futures-util = "0.3.28"
+hex = "0.4.3"
+log = "0.4.17"
+tracing-subscriber = "0.3.16"
+tokio = { version = "1.*", features = ["full"] }
+
+yellowstone-grpc-client = { path = "../../yellowstone-grpc/yellowstone-grpc-client" }
+yellowstone-grpc-proto = { path = "../../yellowstone-grpc/yellowstone-grpc-proto" }
+
+
+#yellowstone-grpc-client = "1.8.0+solana.1.16.1"
+#yellowstone-grpc-proto = "1.8.0+solana.1.16.1"
+
+solana-sdk = "1.16.*"
+solana-client = "1.16.*"
+solana-ledger = "1.16.*"
