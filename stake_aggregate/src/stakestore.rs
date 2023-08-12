@@ -1,10 +1,10 @@
 use crate::AccountPretty;
 use crate::Slot;
-use crate::StakeState;
 use anyhow::bail;
 use borsh::BorshDeserialize;
 use solana_sdk::account::Account;
 use solana_sdk::stake::state::Delegation;
+use solana_sdk::stake::state::StakeState;
 use std::collections::HashMap;
 
 use crate::Pubkey;
@@ -17,11 +17,13 @@ fn stake_map_insert_stake(map: &mut StakeMap, stake_account: Pubkey, stake: Stor
         std::collections::hash_map::Entry::Occupied(occupied) => {
             let strstake = occupied.into_mut(); // <-- get mut reference to existing value
             if strstake.last_update_slot < stake.last_update_slot {
+                log::trace!("Stake updated for: {stake_account} stake:{stake:?}");
                 *strstake = stake;
             }
         }
         // If value doesn't exist yet, then insert a new value of 1
         std::collections::hash_map::Entry::Vacant(vacant) => {
+            log::trace!("New stake added for: {stake_account} stake:{stake:?}");
             vacant.insert(stake);
         }
     };
@@ -83,19 +85,22 @@ impl StakeStore {
     }
 
     pub fn add_stake(&mut self, new_account: AccountPretty) -> anyhow::Result<()> {
-        let Ok(Some(delegated_stake)) = new_account.read_stake() else {
+        let Ok(delegated_stake_opt) = new_account.read_stake() else {
             bail!("Can't read stake from account data");
         };
 
-        let ststake = StoredStake {
-            stake: delegated_stake,
-            last_update_slot: new_account.slot,
-            write_version: new_account.write_version,
-        };
-        match self.extracted {
-            true => self.updates.push((new_account.pubkey, ststake)),
-            false => self.insert_stake(new_account.pubkey, ststake),
+        if let Some(delegated_stake) = delegated_stake_opt {
+            let ststake = StoredStake {
+                stake: delegated_stake,
+                last_update_slot: new_account.slot,
+                write_version: new_account.write_version,
+            };
+            match self.extracted {
+                true => self.updates.push((new_account.pubkey, ststake)),
+                false => self.insert_stake(new_account.pubkey, ststake),
+            }
         }
+
         Ok(())
     }
 
@@ -131,10 +136,14 @@ pub fn merge_program_account_in_strake_map(
 
 pub fn read_stake_from_account_data(mut data: &[u8]) -> anyhow::Result<Option<Delegation>> {
     if data.is_empty() {
-        bail!("Error: read strake of PA account with empty data");
+        log::warn!("read stake from account empty stake account.");
+        bail!("Error: read stake of PA account with empty data");
     }
     match StakeState::deserialize(&mut data)? {
         StakeState::Stake(_, stake) => Ok(Some(stake.delegation)),
-        _ => Ok(None),
+        StakeState::Initialized(_) => Ok(None),
+        other => {
+            bail!("read stake from account not a stake account. read:{other:?}");
+        }
     }
 }

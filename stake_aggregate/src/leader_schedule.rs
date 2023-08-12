@@ -1,14 +1,19 @@
+use anyhow::bail;
+use solana_client::rpc_client::RpcClient;
 use solana_ledger::leader_schedule::LeaderSchedule;
 use solana_sdk::clock::NUM_CONSECUTIVE_LEADER_SLOTS;
+use solana_sdk::commitment_config::CommitmentConfig;
 use solana_sdk::epoch_info::EpochInfo;
 use solana_sdk::pubkey::Pubkey;
 use std::collections::HashMap;
+use std::str::FromStr;
 
 pub fn calculate_leader_schedule_from_stake_map(
     stake_map: &crate::stakestore::StakeMap,
     current_epoch_info: &EpochInfo,
-) -> LeaderSchedule {
+) -> anyhow::Result<LeaderSchedule> {
     let mut stakes = HashMap::<Pubkey, u64>::new();
+    log::trace!("calculate_leader_schedule_from_stake_map stake_map:{stake_map:?} current_epoch_info:{current_epoch_info:?}");
     for storestake in stake_map.values() {
         // Ignore stake accounts activated in this epoch (or later, to include activation_epoch of
         // u64::MAX which indicates no activation ever happened)
@@ -30,7 +35,10 @@ pub fn calculate_leader_schedule_from_stake_map(
 fn calculate_leader_schedule(
     stakes: HashMap<Pubkey, u64>,
     current_epoch_info: &EpochInfo,
-) -> LeaderSchedule {
+) -> anyhow::Result<LeaderSchedule> {
+    if stakes.is_empty() {
+        bail!("calculate_leader_schedule stakes list is empty. no schedule can be calculated.");
+    }
     let mut seed = [0u8; 32];
     seed[0..8].copy_from_slice(&current_epoch_info.epoch.to_le_bytes());
     let mut stakes: Vec<_> = stakes
@@ -38,12 +46,13 @@ fn calculate_leader_schedule(
         .map(|(pubkey, stake)| (*pubkey, *stake))
         .collect();
     sort_stakes(&mut stakes);
-    LeaderSchedule::new(
+    log::trace!("calculate_leader_schedule stakes:{stakes:?}");
+    Ok(LeaderSchedule::new(
         &stakes,
         seed,
         current_epoch_info.slots_in_epoch,
         NUM_CONSECUTIVE_LEADER_SLOTS,
-    )
+    ))
 }
 
 // Cribbed from leader_schedule_utils
@@ -61,4 +70,52 @@ fn sort_stakes(stakes: &mut Vec<(Pubkey, u64)>) {
 
     // Now that it's sorted, we can do an O(n) dedup.
     stakes.dedup();
+}
+
+pub fn verify_schedule(schedule: LeaderSchedule, rpc_url: String) -> anyhow::Result<()> {
+    let rpc_client = RpcClient::new_with_commitment(rpc_url, CommitmentConfig::confirmed());
+    let Some(mut leader_schedule_finalized) = rpc_client.get_leader_schedule(None)? else {
+        log::info!("verify_schedule RPC return no schedule. Try later.");
+        return Ok(());
+    };
+
+    //map leaderscheudle to HashMap<PubKey, Vec<slot>>
+    let mut input_leader_schedule: HashMap<Pubkey, Vec<usize>> = HashMap::new();
+    for (slot, pubkey) in schedule.get_slot_leaders().into_iter().copied().enumerate() {
+        input_leader_schedule
+            .entry(pubkey)
+            .or_insert(vec![])
+            .push(slot);
+    }
+
+    let mut vote_account_in_error: Vec<Pubkey> = input_leader_schedule.into_iter().filter_map(|(input_vote_key, mut input_slot_list)| {
+        let Some(mut rpc_strake_list) = leader_schedule_finalized.remove(&input_vote_key.to_string()) else {
+            log::warn!("verify_schedule vote account not found in RPC:{input_vote_key}");
+            return Some(input_vote_key);
+        };
+        input_slot_list.sort();
+        rpc_strake_list.sort();
+        if input_slot_list.into_iter().zip(rpc_strake_list.into_iter()).filter(|(in_v, rpc)| in_v != rpc).next().is_some() {
+            log::warn!("verify_schedule bad slots for {input_vote_key}"); // Caluclated:{input_slot_list:?} rpc:{rpc_strake_list:?}
+            Some(input_vote_key)
+        } else {
+            None
+        }
+    }).collect();
+
+    if !leader_schedule_finalized.is_empty() {
+        log::warn!(
+            "verify_schedule RPC vote account not present in calculated schedule:{:?}",
+            leader_schedule_finalized.keys()
+        );
+        vote_account_in_error.append(
+            &mut leader_schedule_finalized
+                .keys()
+                .map(|sk| Pubkey::from_str(&sk).unwrap())
+                .collect::<Vec<Pubkey>>(),
+        );
+    }
+
+    log::info!("verify_schedule these account are wrong:{vote_account_in_error:?}");
+    Ok(())
 }
