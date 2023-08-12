@@ -81,7 +81,7 @@ pub fn verify_schedule(schedule: LeaderSchedule, rpc_url: String) -> anyhow::Res
 
     //map leaderscheudle to HashMap<PubKey, Vec<slot>>
     let mut input_leader_schedule: HashMap<Pubkey, Vec<usize>> = HashMap::new();
-    for (slot, pubkey) in schedule.get_slot_leaders().into_iter().copied().enumerate() {
+    for (slot, pubkey) in schedule.get_slot_leaders().iter().copied().enumerate() {
         input_leader_schedule
             .entry(pubkey)
             .or_insert(vec![])
@@ -95,7 +95,7 @@ pub fn verify_schedule(schedule: LeaderSchedule, rpc_url: String) -> anyhow::Res
         };
         input_slot_list.sort();
         rpc_strake_list.sort();
-        if input_slot_list.into_iter().zip(rpc_strake_list.into_iter()).filter(|(in_v, rpc)| in_v != rpc).next().is_some() {
+        if input_slot_list.into_iter().zip(rpc_strake_list.into_iter()).any(|(in_v, rpc)| in_v != rpc) {
             log::warn!("verify_schedule bad slots for {input_vote_key}"); // Caluclated:{input_slot_list:?} rpc:{rpc_strake_list:?}
             Some(input_vote_key)
         } else {
@@ -111,7 +111,7 @@ pub fn verify_schedule(schedule: LeaderSchedule, rpc_url: String) -> anyhow::Res
         vote_account_in_error.append(
             &mut leader_schedule_finalized
                 .keys()
-                .map(|sk| Pubkey::from_str(&sk).unwrap())
+                .map(|sk| Pubkey::from_str(sk).unwrap())
                 .collect::<Vec<Pubkey>>(),
         );
     }
