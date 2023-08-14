@@ -1,5 +1,7 @@
 use borsh::BorshDeserialize;
-use chrono::{Datelike, Local, NaiveDate, NaiveTime, Timelike};
+use chrono::{Datelike, Local, Timelike};
+use serde_derive::Serialize;
+use solana_sdk::stake::state::StakeState;
 use core::str::FromStr;
 use serde_json;
 use solana_client::nonblocking::rpc_client::RpcClient;
@@ -7,16 +9,11 @@ use solana_ledger::leader_schedule::LeaderSchedule;
 use solana_sdk::clock::NUM_CONSECUTIVE_LEADER_SLOTS;
 use solana_sdk::commitment_config::CommitmentConfig;
 use solana_sdk::pubkey::Pubkey;
-use solana_sdk::stake::state::StakeState;
 use std::collections::HashMap;
 use std::env;
-use std::time::Duration;
-use time::{Duration as TimeDuration, OffsetDateTime, UtcOffset};
 use tokio::fs::File;
 use tokio::io::AsyncWriteExt;
 
-const RPC_URL: &str = "https://api.mainnet-beta.solana.com";
-//const RPC_URL: &str = "https://api.testnet.solana.com";
 //const RPC_URL: &str = "https://api.devnet.solana.com";
 
 const SLOTS_IN_EPOCH: u64 = 432000;
@@ -26,51 +23,24 @@ pub async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt::init();
     let args: Vec<String> = env::args().collect();
 
-    if args.len() != 4 {
-        eprintln!("Please provide 3 arguments: hour, minute and seconds");
-        std::process::exit(1);
-    }
-
-    let target_hour: u32 = args[1]
-        .parse()
-        .expect("First argument should be a number representing the hour");
-    let target_minute: u32 = args[2]
-        .parse()
-        .expect("Second argument should be a number representing the minute");
-    let target_second: u32 = args[3]
-        .parse()
-        .expect("Third argument should be a number representing the seconds");
-
-    let seconds_until_target = seconds_until_target_time(target_hour, target_minute, target_second);
-    log::info!("seconds_until_target:{}", seconds_until_target);
-    let to_wait = Duration::from_secs(seconds_until_target as u64 - 30);
-    tokio::time::sleep(to_wait).await;
-
-    let mut counter = 0;
-    let mut schedule_counter = 0;
-    let mut epoch_offset = 1;
-
-    loop {
-        match write_schedule(0).await {
-            Ok(()) => {
-                epoch_offset = 0;
-                schedule_counter += 1;
-                if schedule_counter == 3 {
-                    break;
-                }
-                tokio::time::sleep(Duration::from_secs(30)).await;
-            }
-            Err(err) => {
-                log::info!("error:{err}");
-                tokio::time::sleep(tokio::time::Duration::from_millis(2)).await;
-                counter += 1;
-                if counter == 5 {
-                    break;
-                }
-            }
+    match write_schedule(0).await {
+        Ok(()) => {
+        }
+        Err(err) => {
+            log::info!("error:{err}");
         }
     }
     Ok(())
+}
+
+#[derive(Serialize, Clone, Copy, Debug)]
+pub struct NodeStakeData {
+    pub identity: Pubkey,
+    pub stakes_from_vote_account : u64,
+    pub stakes_from_stake_accounts : u64,
+    pub times_in_leader_schedule: u64,
+    pub times_in_leader_schedule_calculated_by_vote_account: u64,
+    pub times_in_leader_schedule_calculated_by_stake_accounts: u64,
 }
 
 async fn write_schedule(epoch_offset: u64) -> anyhow::Result<()> {
@@ -93,17 +63,10 @@ async fn write_schedule(epoch_offset: u64) -> anyhow::Result<()> {
     // Write to the file
     let mut file = File::create(file_name).await?;
     file.write_all(serialized_map.as_bytes()).await?;
-    //show all schedule aggregated.
-    let mut print_finalized = schedule
-        .into_iter()
-        .map(|(key, values)| format!("{key}:{:?}", values))
-        .collect::<Vec<String>>();
-    print_finalized.sort();
-    log::info!("leader_schedule_finalized:{:?}", print_finalized);
     Ok(())
 }
 
-async fn process_schedule(epoch_offset: u64) -> anyhow::Result<HashMap<String, (u64, u64, u64)>> {
+async fn process_schedule(epoch_offset: u64) -> anyhow::Result<Vec<NodeStakeData>> {
     let rpc_client =
         RpcClient::new_with_commitment(RPC_URL.to_string(), CommitmentConfig::finalized());
 
@@ -115,20 +78,65 @@ async fn process_schedule(epoch_offset: u64) -> anyhow::Result<HashMap<String, (
     let current_epoch = epoch_info.epoch;
 
     // Fetch stakes in current epoch
-    let response = rpc_client
-        .get_program_accounts(&solana_sdk::stake::program::id())
-        .await?;
+    // let response = rpc_client
+    //     .get_program_accounts(&solana_sdk::stake::program::id())
+    //     .await?;
 
     log::info!("current_slot:{slot:?}");
     log::info!("epoch_info:{epoch_info:?}");
-    log::info!("get_program_accounts:{:?}", response.len());
 
     let mut stakes = HashMap::<Pubkey, u64>::new();
+    stakes.insert(Pubkey::new_unique(), 100);
 
-    for (pubkey, account) in response {
+
+    //get leader schedule from rpc
+    let leader_schedule_finalized = rpc_client.get_leader_schedule(None).await?.unwrap(); //Some(slot)
+    let mut nb_slots_in_ls =  0;
+    for l in leader_schedule_finalized.iter().map(|x| x.1.len()) {
+        nb_slots_in_ls += l;
+    }
+    assert!( nb_slots_in_ls == 432000 );
+
+    //build vote account node key association table
+    let vote_account = rpc_client.get_vote_accounts().await?;
+
+    let identity_vote_pk_map : HashMap<_,_> = vote_account.current
+    .iter()
+    .chain(vote_account.delinquent.iter())
+    .map(|x| (Pubkey::from_str(x.vote_pubkey.as_str()).unwrap(), Pubkey::from_str(x.node_pubkey.as_str()).unwrap())).collect();
+
+    //build schedule from vote account.
+    let vote_stakes: HashMap<Pubkey, u64> = vote_account
+        .current
+        .iter()
+        .chain(vote_account.delinquent.iter())
+        .filter(|x| x.epoch_vote_account && x.activated_stake > 0)
+        .map(|va| {
+            (
+                Pubkey::from_str(&va.node_pubkey).unwrap(),
+                va.activated_stake,
+            )
+        })
+        .collect();
+
+    let leader_schedule_va = calculate_leader_schedule(current_epoch + epoch_offset, vote_stakes.clone());
+    let mut leader_times_va : HashMap<Pubkey, u64> = HashMap::new();
+    leader_schedule_va.get_slot_leaders().iter().for_each(|l| {
+        *leader_times_va
+            .entry(l.clone())
+            .or_insert(0) += 1;
+
+    });
+
+    // build schedule from stake accounts
+    let response = rpc_client
+        .get_program_accounts(&solana_sdk::stake::program::id())
+        .await?;
+    let mut stakes = HashMap::<Pubkey, u64>::new();
+    for (_, account) in response {
         // Zero-length accounts owned by the stake program are system accounts that were re-assigned and are to be
         // ignored
-        if account.data.len() == 0 {
+        if account.data.len() == 0 || account.lamports == 0 {
             continue;
         }
 
@@ -136,97 +144,47 @@ async fn process_schedule(epoch_offset: u64) -> anyhow::Result<HashMap<String, (
             StakeState::Stake(_, stake) => {
                 // Ignore stake accounts activated in this epoch (or later, to include activation_epoch of
                 // u64::MAX which indicates no activation ever happened)
-                if stake.delegation.activation_epoch >= current_epoch {
+                if stake.delegation.activation_epoch > current_epoch {
                     continue;
                 }
                 // Ignore stake accounts deactivated before this epoch
-                if stake.delegation.deactivation_epoch < current_epoch {
+                if stake.delegation.deactivation_epoch <= current_epoch {
                     continue;
                 }
+
+                let node_pk = identity_vote_pk_map.get(&stake.delegation.voter_pubkey).unwrap().clone();
                 // Add the stake in this stake account to the total for the delegated-to vote account
                 *(stakes
-                    .entry(stake.delegation.voter_pubkey.clone())
+                    .entry(node_pk)
                     .or_insert(0)) += stake.delegation.stake;
             }
             _ => (),
         }
     }
 
-    let leader_schedule = calculate_leader_schedule(current_epoch + epoch_offset, stakes);
+    let leader_schedule_by_stake_account = calculate_leader_schedule(current_epoch + epoch_offset, stakes.clone());
+    let mut leader_times_sa : HashMap<Pubkey, u64> = HashMap::new();
+    leader_schedule_by_stake_account.get_slot_leaders().iter().for_each(|l| {
+        *leader_times_sa
+            .entry(l.clone())
+            .or_insert(0) += 1;
 
-    let mut leader_schedule_aggregated: HashMap<String, (u64, u64, u64)> = leader_schedule
-        .get_slot_leaders()
-        .iter()
-        .fold(HashMap::new(), |mut sc, l| {
-            sc.entry(l.to_string()).or_insert((0, 0, 0)).1 += 1;
-            sc
-        });
-    // for (leader, nb) in leader_schedule_aggregated {
-    //     println!("{leader}:{nb}");
-    // }
-
-    //build vote account node key association table
-    let vote_account = rpc_client.get_vote_accounts().await?;
-    let note_vote_table = vote_account
-        .current
-        .iter()
-        .chain(vote_account.delinquent.iter())
-        .map(|va| (va.node_pubkey.clone(), va.vote_pubkey.clone()))
-        .collect::<HashMap<String, String>>();
-
-    //get leader schedule from rpc
-    let leader_schedule_finalized = rpc_client.get_leader_schedule(Some(slot)).await?; //Some(slot)
-
-    let binding = "Vote key not found".to_string();
-    leader_schedule_finalized
-        .unwrap()
-        .into_iter()
-        .for_each(|(key, slots)| {
-            let vote_key = note_vote_table.get(&key.to_string()).unwrap_or(&binding);
-            leader_schedule_aggregated
-                .entry(vote_key.clone())
-                .or_insert((0, 0, 0))
-                .0 += slots.len() as u64
-        });
-
-    //build schedule from vote account.
-    let vote_stackes: HashMap<Pubkey, u64> = vote_account
-        .current
-        .iter()
-        .chain(vote_account.delinquent.iter())
-        .map(|va| {
-            (
-                Pubkey::from_str(&va.vote_pubkey).unwrap(),
-                va.activated_stake,
-            )
-        })
-        .collect();
-    let leader_schedule_va = calculate_leader_schedule(current_epoch + epoch_offset, vote_stackes);
-    leader_schedule_va.get_slot_leaders().iter().for_each(|l| {
-        leader_schedule_aggregated
-            .entry(l.to_string())
-            .or_insert((0, 0, 0))
-            .2 += 1;
     });
 
-    // log::info!(
-    //     "vote account current:{:?}",
-    //     vote_account
-    //         .current
-    //         .iter()
-    //         .map(|va| format!("{}/{}", va.vote_pubkey, va.node_pubkey))
-    //         .collect::<Vec<String>>()
-    // );
-    // log::info!(
-    //     "vote account delinquent:{:?}",
-    //     vote_account
-    //         .delinquent
-    //         .iter()
-    //         .map(|va| format!("{}/{}", va.vote_pubkey, va.node_pubkey))
-    //         .collect::<Vec<String>>()
-    // );
-
-    Ok(leader_schedule_aggregated)
+    let data = leader_schedule_finalized.iter().map(
+        |(key, schedule)| {
+            let identity = Pubkey::from_str(key.as_str()).unwrap();
+            NodeStakeData {
+                identity: Pubkey::from_str(key.as_str()).unwrap(),
+                times_in_leader_schedule: schedule.len() as u64,
+                stakes_from_stake_accounts: *stakes.get(&identity).unwrap(),
+                stakes_from_vote_account: *vote_stakes.get(&identity).unwrap(),
+                times_in_leader_schedule_calculated_by_stake_accounts: *leader_times_va.get(&identity).unwrap(),
+                times_in_leader_schedule_calculated_by_vote_account: *leader_times_sa.get(&identity).unwrap(),
+            }
+        }
+    ).collect();
+    Ok(data)
 }
 
 //Copied from leader_schedule_utils.rs
@@ -257,53 +215,4 @@ fn sort_stakes(stakes: &mut Vec<(Pubkey, u64)>) {
 
     // Now that it's sorted, we can do an O(n) dedup.
     stakes.dedup();
-}
-
-fn seconds_until_target_time_with_time(
-    target_hour: u8,
-    target_minute: u8,
-    target_second: u8,
-) -> i64 {
-    //let local_offset = UtcOffset::local_offset_at(OffsetDateTime::UNIX_EPOCH);
-    //log::info!("{local_offset:?}");
-    //set UTC+2
-    let utcp2 = UtcOffset::from_hms(2, 0, 0).unwrap();
-    let now = OffsetDateTime::now_utc().to_offset(utcp2);
-    //let now = OffsetDateTime::now_utc();
-    log::info!("now:{now:?}");
-    let mut target_time = now
-        .date()
-        .with_hms(target_hour, target_minute, target_second)
-        .unwrap()
-        .assume_offset(utcp2);
-
-    // If the target time has passed for today, calculate for next day
-    if now > target_time {
-        log::info!("add one day");
-        target_time = target_time + TimeDuration::days(1);
-    }
-    log::info!("target_time:{target_time:?}");
-
-    let duration_until_target = target_time - now;
-    duration_until_target.whole_seconds()
-}
-
-fn seconds_until_target_time(target_hour: u32, target_minute: u32, target_second: u32) -> u64 {
-    let now = Local::now();
-    log::info!("now:{now:?}");
-    let today = now.date_naive();
-    let target_naive_time =
-        NaiveTime::from_hms_opt(target_hour, target_minute, target_second).unwrap();
-    let mut target_time = NaiveDate::and_time(&today, target_naive_time);
-
-    // If the target time has passed for today, calculate for next day
-    if target_time < now.naive_local() {
-        target_time = NaiveDate::and_time(&(today + chrono::Duration::days(1)), target_naive_time);
-    }
-
-    log::info!("target_time:{target_time:?}");
-    let duration_until_target = target_time
-        .signed_duration_since(now.naive_local())
-        .num_seconds() as u64;
-    duration_until_target
 }
