@@ -31,6 +31,7 @@ fn stake_map_insert_stake(map: &mut StakeMap, stake_account: Pubkey, stake: Stor
 
 #[derive(Debug, Default)]
 pub struct StoredStake {
+    pub pubkey: Pubkey,
     pub stake: Delegation,
     pub last_update_slot: Slot,
     pub write_version: u64,
@@ -91,6 +92,7 @@ impl StakeStore {
 
         if let Some(delegated_stake) = delegated_stake_opt {
             let ststake = StoredStake {
+                pubkey: new_account.pubkey,
                 stake: delegated_stake,
                 last_update_slot: new_account.slot,
                 write_version: new_account.write_version,
@@ -126,6 +128,7 @@ pub fn merge_program_account_in_strake_map(
         )
         .for_each(|(pk, delegated_stake)| {
             let stake = StoredStake {
+                pubkey: pk,
                 stake: delegated_stake,
                 last_update_slot: 0,
                 write_version: 0,

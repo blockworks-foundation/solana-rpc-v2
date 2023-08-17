@@ -1,3 +1,5 @@
+//cargo run 10 23 15
+
 use borsh::BorshDeserialize;
 use chrono::{Datelike, Local, NaiveDate, NaiveTime, Timelike};
 use core::str::FromStr;
@@ -8,18 +10,21 @@ use solana_sdk::clock::NUM_CONSECUTIVE_LEADER_SLOTS;
 use solana_sdk::commitment_config::CommitmentConfig;
 use solana_sdk::pubkey::Pubkey;
 use solana_sdk::stake::state::StakeState;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::env;
 use std::time::Duration;
 use time::{Duration as TimeDuration, OffsetDateTime, UtcOffset};
 use tokio::fs::File;
 use tokio::io::AsyncWriteExt;
 
-const RPC_URL: &str = "https://api.mainnet-beta.solana.com";
+//const RPC_URL: &str = "https://api.mainnet-beta.solana.com";
 //const RPC_URL: &str = "https://api.testnet.solana.com";
 //const RPC_URL: &str = "https://api.devnet.solana.com";
+//const RPC_URL: &str = "http://localhost:8899";
+const RPC_URL: &str = "http://192.168.88.31:8899";
 
-const SLOTS_IN_EPOCH: u64 = 432000;
+//const SLOTS_IN_EPOCH: u64 = 432000;
+const MAX_EPOCH_VALUE: u64 = 18446744073709551615;
 
 #[tokio::main(flavor = "multi_thread", worker_threads = 16)]
 pub async fn main() -> anyhow::Result<()> {
@@ -43,12 +48,12 @@ pub async fn main() -> anyhow::Result<()> {
 
     let seconds_until_target = seconds_until_target_time(target_hour, target_minute, target_second);
     log::info!("seconds_until_target:{}", seconds_until_target);
-    let to_wait = Duration::from_secs(seconds_until_target as u64 - 30);
-    tokio::time::sleep(to_wait).await;
+    let to_wait = Duration::from_secs((seconds_until_target as u64).saturating_sub(30));
+    //tokio::time::sleep(to_wait).await;
 
     let mut counter = 0;
     let mut schedule_counter = 0;
-    let mut epoch_offset = 1;
+    let mut epoch_offset = 0;
 
     loop {
         match write_schedule(0).await {
@@ -58,10 +63,11 @@ pub async fn main() -> anyhow::Result<()> {
                 if schedule_counter == 3 {
                     break;
                 }
+                break;
                 tokio::time::sleep(Duration::from_secs(30)).await;
             }
             Err(err) => {
-                log::info!("error:{err}");
+                log::error!("error:{err}");
                 tokio::time::sleep(tokio::time::Duration::from_millis(2)).await;
                 counter += 1;
                 if counter == 5 {
@@ -73,9 +79,19 @@ pub async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
+async fn save_map(file_name: &str, map: &BTreeMap<String, (u64, u64, u64)>) -> anyhow::Result<()> {
+    let serialized_map = serde_json::to_string(map).unwrap();
+    // Write to the file
+    //let mut file = File::create(file_name).await?;
+    //file.write_all(serialized_map.as_bytes()).await?;
+    log::info!("Files: {file_name}");
+    log::info!("{}", serialized_map);
+    Ok(())
+}
+
 async fn write_schedule(epoch_offset: u64) -> anyhow::Result<()> {
-    let schedule = process_schedule(epoch_offset).await?;
-    let serialized_map = serde_json::to_string(&schedule).unwrap();
+    log::info!("start schedule calculus process");
+    let (schedule, stakes_aggregated) = process_schedule(epoch_offset).await?;
     let now = Local::now();
     let date_string = format!(
         "{}_{}_{}-{}_{}_{}",
@@ -88,22 +104,32 @@ async fn write_schedule(epoch_offset: u64) -> anyhow::Result<()> {
     );
 
     // Create the file name
-    let file_name = format!("output_{}.json", date_string);
-
-    // Write to the file
-    let mut file = File::create(file_name).await?;
-    file.write_all(serialized_map.as_bytes()).await?;
-    //show all schedule aggregated.
-    let mut print_finalized = schedule
+    let file_name = format!("out_sc_{}.json", date_string);
+    save_map(&file_name, &schedule).await?;
+    let file_name = format!("out_st_{}.json", date_string);
+    //filter with stake diff accont.
+    let stakes_aggregated: BTreeMap<String, (u64, u64, u64)> = stakes_aggregated
         .into_iter()
-        .map(|(key, values)| format!("{key}:{:?}", values))
-        .collect::<Vec<String>>();
-    print_finalized.sort();
-    log::info!("leader_schedule_finalized:{:?}", print_finalized);
+        .filter_map(|(pk, (pa, va))| (pa != va).then_some((pk, (0u64, pa, va))))
+        .collect();
+    save_map(&file_name, &stakes_aggregated).await?;
+
+    //show all schedule aggregated.
+    // let mut print_finalized = schedule
+    //     .into_iter()
+    //     .map(|(key, values)| format!("{key}:{:?}", values))
+    //     .collect::<Vec<String>>();
+    // print_finalized.sort();
+    //log::info!("leader_schedule_finalized:{:?}", print_finalized);
     Ok(())
 }
 
-async fn process_schedule(epoch_offset: u64) -> anyhow::Result<HashMap<String, (u64, u64, u64)>> {
+async fn process_schedule(
+    epoch_offset: u64,
+) -> anyhow::Result<(
+    BTreeMap<String, (u64, u64, u64)>,
+    BTreeMap<String, (u64, u64)>,
+)> {
     let rpc_client =
         RpcClient::new_with_commitment(RPC_URL.to_string(), CommitmentConfig::finalized());
 
@@ -111,59 +137,93 @@ async fn process_schedule(epoch_offset: u64) -> anyhow::Result<HashMap<String, (
 
     // Fetch current epoch
     let epoch_info = rpc_client.get_epoch_info().await?;
+    log::info!("process_schedule current_epoch:{epoch_info:?}");
 
     let current_epoch = epoch_info.epoch;
-
-    // Fetch stakes in current epoch
-    let response = rpc_client
-        .get_program_accounts(&solana_sdk::stake::program::id())
-        .await?;
-
     log::info!("current_slot:{slot:?}");
     log::info!("epoch_info:{epoch_info:?}");
-    log::info!("get_program_accounts:{:?}", response.len());
 
-    let mut stakes = HashMap::<Pubkey, u64>::new();
+    let call_program_account = true;
+    let pa_stakes = if call_program_account {
+        let mut stakes = HashMap::<Pubkey, u64>::new();
+        // Fetch stakes in current epoch
+        let response = rpc_client
+            .get_program_accounts(&solana_sdk::stake::program::id())
+            .await?;
 
-    for (pubkey, account) in response {
-        // Zero-length accounts owned by the stake program are system accounts that were re-assigned and are to be
-        // ignored
-        if account.data.len() == 0 {
-            continue;
-        }
+        //log::info!("get_program_accounts:{:?}", response);
 
-        match StakeState::deserialize(&mut account.data.as_slice())? {
-            StakeState::Stake(_, stake) => {
-                // Ignore stake accounts activated in this epoch (or later, to include activation_epoch of
-                // u64::MAX which indicates no activation ever happened)
-                if stake.delegation.activation_epoch >= current_epoch {
-                    continue;
-                }
-                // Ignore stake accounts deactivated before this epoch
-                if stake.delegation.deactivation_epoch < current_epoch {
-                    continue;
-                }
-                // Add the stake in this stake account to the total for the delegated-to vote account
-                *(stakes
-                    .entry(stake.delegation.voter_pubkey.clone())
-                    .or_insert(0)) += stake.delegation.stake;
+        for (pubkey, account) in response {
+            // Zero-length accounts owned by the stake program are system accounts that were re-assigned and are to be
+            // ignored
+            if account.data.len() == 0 {
+                continue;
             }
-            _ => (),
+
+            match StakeState::deserialize(&mut account.data.as_slice())? {
+                StakeState::Stake(_, stake) => {
+                    //log::info!("Program_accounts stake:{stake:#?}");
+                    //On test validator all stakes are attributes to an account with stake.delegation.activation_epoch == MAX_EPOCH_VALUE.
+                    //It's considered as activated stake.
+                    if stake.delegation.activation_epoch == MAX_EPOCH_VALUE {
+                        log::info!("Found account with stake.delegation.activation_epoch == MAX_EPOCH_VALUE use it: {}", pubkey.to_string());
+                    } else {
+                        // Ignore stake accounts activated in this epoch (or later, to include activation_epoch of
+                        // u64::MAX which indicates no activation ever happened)
+                        if stake.delegation.activation_epoch >= current_epoch {
+                            continue;
+                        }
+                        // Ignore stake accounts deactivated before this epoch
+                        if stake.delegation.deactivation_epoch < current_epoch {
+                            continue;
+                        }
+                    }
+
+                    // Add the stake in this stake account to the total for the delegated-to vote account
+                    log::info!("Stake {pubkey} account:{account:?} stake:{stake:?} ");
+                    *(stakes
+                        .entry(stake.delegation.voter_pubkey.clone())
+                        .or_insert(0)) += stake.delegation.stake;
+                }
+                _ => (),
+            }
         }
-    }
+        stakes
+    } else {
+        //Put a dummy value if no PA stake are available.
+        let mut stakes = HashMap::<Pubkey, u64>::new();
+        stakes.insert(
+            Pubkey::from_str("9C4UgjzAch2ZTaBnjCyJ4oXLBnkyZZqdaB6fmRdPuHeD").unwrap(),
+            10,
+        );
+        stakes
+    };
 
-    let leader_schedule = calculate_leader_schedule(current_epoch + epoch_offset, stakes);
+    log::info!("PA Stakes:{pa_stakes:?}");
 
-    let mut leader_schedule_aggregated: HashMap<String, (u64, u64, u64)> = leader_schedule
+    let mut stakes_aggregated: BTreeMap<String, (u64, u64)> = pa_stakes
+        .iter()
+        .map(|(pk, stake)| (pk.to_string(), (*stake, 0u64)))
+        .collect();
+
+    let leader_schedule = calculate_leader_schedule(
+        current_epoch + epoch_offset,
+        pa_stakes,
+        epoch_info.slots_in_epoch,
+    );
+
+    let mut leader_schedule_aggregated: BTreeMap<String, (u64, u64, u64)> = leader_schedule
         .get_slot_leaders()
         .iter()
-        .fold(HashMap::new(), |mut sc, l| {
+        .fold(BTreeMap::new(), |mut sc, l| {
             sc.entry(l.to_string()).or_insert((0, 0, 0)).1 += 1;
             sc
         });
     // for (leader, nb) in leader_schedule_aggregated {
     //     println!("{leader}:{nb}");
     // }
+
+    //let _ = verify_schedule(leader_schedule, RPC_URL.to_string()).await;
 
     //build vote account node key association table
     let vote_account = rpc_client.get_vote_accounts().await?;
@@ -173,6 +233,8 @@ async fn process_schedule(epoch_offset: u64) -> anyhow::Result<HashMap<String, (
         .chain(vote_account.delinquent.iter())
         .map(|va| (va.node_pubkey.clone(), va.vote_pubkey.clone()))
         .collect::<HashMap<String, String>>();
+
+    log::info!("VOTE Stakes:{vote_account:#?}");
 
     //get leader schedule from rpc
     let leader_schedule_finalized = rpc_client.get_leader_schedule(Some(slot)).await?; //Some(slot)
@@ -201,13 +263,25 @@ async fn process_schedule(epoch_offset: u64) -> anyhow::Result<HashMap<String, (
             )
         })
         .collect();
-    let leader_schedule_va = calculate_leader_schedule(current_epoch + epoch_offset, vote_stackes);
+
+    vote_stackes.iter().for_each(|(pk, stake)| {
+        stakes_aggregated.entry(pk.to_string()).or_insert((0, 0)).1 = *stake;
+    });
+
+    let leader_schedule_va = calculate_leader_schedule(
+        current_epoch + epoch_offset,
+        vote_stackes,
+        epoch_info.slots_in_epoch,
+    );
     leader_schedule_va.get_slot_leaders().iter().for_each(|l| {
         leader_schedule_aggregated
             .entry(l.to_string())
             .or_insert((0, 0, 0))
             .2 += 1;
     });
+
+    //verify VA schedule
+    let _ = verify_schedule(leader_schedule_va, &note_vote_table, RPC_URL.to_string()).await;
 
     // log::info!(
     //     "vote account current:{:?}",
@@ -225,13 +299,17 @@ async fn process_schedule(epoch_offset: u64) -> anyhow::Result<HashMap<String, (
     //         .map(|va| format!("{}/{}", va.vote_pubkey, va.node_pubkey))
     //         .collect::<Vec<String>>()
     // );
-
-    Ok(leader_schedule_aggregated)
+    log::info!("end process_schedule:{:?}", leader_schedule_aggregated);
+    Ok((leader_schedule_aggregated, stakes_aggregated))
 }
 
 //Copied from leader_schedule_utils.rs
 // Mostly cribbed from leader_schedule_utils
-fn calculate_leader_schedule(epoch: u64, stakes: HashMap<Pubkey, u64>) -> LeaderSchedule {
+fn calculate_leader_schedule(
+    epoch: u64,
+    stakes: HashMap<Pubkey, u64>,
+    slots_in_epoch: u64,
+) -> LeaderSchedule {
     let mut seed = [0u8; 32];
     seed[0..8].copy_from_slice(&epoch.to_le_bytes());
     let mut stakes: Vec<_> = stakes
@@ -239,7 +317,7 @@ fn calculate_leader_schedule(epoch: u64, stakes: HashMap<Pubkey, u64>) -> Leader
         .map(|(pubkey, stake)| (*pubkey, *stake))
         .collect();
     sort_stakes(&mut stakes);
-    LeaderSchedule::new(&stakes, seed, SLOTS_IN_EPOCH, NUM_CONSECUTIVE_LEADER_SLOTS)
+    LeaderSchedule::new(&stakes, seed, slots_in_epoch, NUM_CONSECUTIVE_LEADER_SLOTS)
 }
 
 // Cribbed from leader_schedule_utils
@@ -306,4 +384,67 @@ fn seconds_until_target_time(target_hour: u32, target_minute: u32, target_second
         .signed_duration_since(now.naive_local())
         .num_seconds() as u64;
     duration_until_target
+}
+
+pub async fn verify_schedule(
+    schedule: LeaderSchedule,
+    node_vote_account_map: &HashMap<String, String>,
+    rpc_url: String,
+) -> anyhow::Result<()> {
+    let rpc_client = RpcClient::new_with_commitment(rpc_url, CommitmentConfig::confirmed());
+    let Some(leader_schedule_finalized) = rpc_client.get_leader_schedule(None).await? else {
+        log::info!("verify_schedule RPC return no schedule. Try later.");
+        return Ok(());
+    };
+
+    //map leaderscheudle to HashMap<PubKey, Vec<slot>>
+    let mut input_leader_schedule: HashMap<Pubkey, Vec<usize>> = HashMap::new();
+    for (slot, pubkey) in schedule.get_slot_leaders().iter().copied().enumerate() {
+        input_leader_schedule
+            .entry(pubkey)
+            .or_insert(vec![])
+            .push(slot);
+    }
+
+    log::trace!("verify_schedule input_leader_schedule:{input_leader_schedule:?} leader_schedule_finalized:{leader_schedule_finalized:?}");
+
+    //map rpc leader schedule node pubkey to vote account
+    let mut leader_schedule_finalized: HashMap<&String, Vec<usize>> = leader_schedule_finalized.into_iter().filter_map(|(pk, slots)| match node_vote_account_map.get(&pk) {
+            Some(vote_account) => Some((vote_account,slots)),
+            None => {
+                log::warn!("verify_schedule RPC get_leader_schedule return some Node account:{pk} that are not mapped by rpc get_vote_accounts");
+                None
+            },
+        }).collect();
+
+    let mut vote_account_in_error: Vec<Pubkey> = input_leader_schedule.into_iter().filter_map(|(input_vote_key, mut input_slot_list)| {
+        let Some(mut rpc_strake_list) = leader_schedule_finalized.remove(&input_vote_key.to_string()) else {
+            log::warn!("verify_schedule vote account not found in RPC:{input_vote_key}");
+            return Some(input_vote_key);
+        };
+        input_slot_list.sort();
+        rpc_strake_list.sort();
+        if input_slot_list.into_iter().zip(rpc_strake_list.into_iter()).any(|(in_v, rpc)| in_v != rpc) {
+            log::warn!("verify_schedule bad slots for {input_vote_key}"); // Caluclated:{input_slot_list:?} rpc:{rpc_strake_list:?}
+            Some(input_vote_key)
+        } else {
+            None
+        }
+    }).collect();
+
+    if !leader_schedule_finalized.is_empty() {
+        log::warn!(
+            "verify_schedule RPC vote account not present in calculated schedule:{:?}",
+            leader_schedule_finalized.keys()
+        );
+        vote_account_in_error.append(
+            &mut leader_schedule_finalized
+                .keys()
+                .map(|sk| Pubkey::from_str(sk).unwrap())
+                .collect::<Vec<Pubkey>>(),
+        );
+    }
+
+    log::info!("verify_schedule these account are wrong:{vote_account_in_error:?}");
+    Ok(())
 }

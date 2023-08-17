@@ -1,3 +1,4 @@
+//RUST_BACKTRACE=1 RUST_LOG=stake_aggregate=trace cargo run
 use crate::stakestore::StakeStore;
 use futures_util::stream::FuturesUnordered;
 use futures_util::StreamExt;
@@ -26,8 +27,10 @@ type Slot = u64;
 
 //WebSocket URL: ws://localhost:8900/ (computed)
 
-const GRPC_URL: &str = "http://127.0.0.0:10000";
-const RPC_URL: &str = "http://localhost:8899";
+//const GRPC_URL: &str = "http://127.0.0.0:10000";
+const GRPC_URL: &str = "http://192.168.88.31:10000";
+//const RPC_URL: &str = "http://localhost:8899";
+const RPC_URL: &str = "http://192.168.88.31:8899";
 
 //const RPC_URL: &str = "https://api.mainnet-beta.solana.com";
 //const RPC_URL: &str = "https://api.testnet.solana.com";
@@ -224,7 +227,7 @@ async fn run_loop<F: Interceptor>(mut client: GeyserGrpcClient<F>) -> anyhow::Re
                         //process the message
                         match message {
                             Ok(msg) => {
-                                //log::info!("new message: {msg:?}");
+                                log::info!("new message: {msg:?}");
                                 match msg.update_oneof {
                                     Some(UpdateOneof::Account(account)) => {
                                         //store new account stake.
@@ -238,10 +241,10 @@ async fn run_loop<F: Interceptor>(mut client: GeyserGrpcClient<F>) -> anyhow::Re
                                     }
                                     Some(UpdateOneof::Slot(slot)) => {
                                         //update current slot
-                                        //log::info!("Processing slot: {:?}", slot);
+                                        //log::info!("Processing slot: {:?} current slot:{:?}", slot, current_slot);
                                         current_slot.update_slot(&slot);
 
-                                        if current_slot.confirmed_slot == current_epoch.slot_index + current_epoch.slots_in_epoch {
+                                        if current_slot.confirmed_slot == current_epoch.absolute_slot + current_epoch.slots_in_epoch {
                                             log::info!("End epoch slot. Calculate schedule.");
                                             let Ok(stake_map) = extract_stakestore(&mut stakestore) else {
                                                 log::info!("Epoch schedule aborted because a getPA is currently running.");
@@ -288,7 +291,7 @@ async fn run_loop<F: Interceptor>(mut client: GeyserGrpcClient<F>) -> anyhow::Re
     Ok(())
 }
 
-#[derive(Default)]
+#[derive(Default, Debug)]
 struct CurrentSlot {
     processed_slot: u64,
     confirmed_slot: u64,
