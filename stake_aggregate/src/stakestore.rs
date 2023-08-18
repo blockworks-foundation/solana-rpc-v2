@@ -42,6 +42,7 @@ pub struct StakeStore {
     stakes: StakeMap,
     updates: Vec<(Pubkey, StoredStake)>,
     extracted: bool,
+    current_end_epoch_slot: Slot,
 }
 
 impl StakeStore {
@@ -50,6 +51,7 @@ impl StakeStore {
             stakes: HashMap::with_capacity(capacity),
             updates: vec![],
             extracted: false,
+            current_end_epoch_slot: 0,
         }
     }
 
@@ -64,6 +66,7 @@ impl StakeStore {
             stakes: HashMap::new(),
             updates: self.updates,
             extracted: true,
+            current_end_epoch_slot: 0,
         };
         Ok((stakestore, self.stakes))
     }
@@ -76,6 +79,7 @@ impl StakeStore {
             stakes,
             updates: vec![],
             extracted: false,
+            current_end_epoch_slot: 0,
         };
 
         //apply stake added during extraction.
@@ -97,9 +101,13 @@ impl StakeStore {
                 last_update_slot: new_account.slot,
                 write_version: new_account.write_version,
             };
-            match self.extracted {
-                true => self.updates.push((new_account.pubkey, ststake)),
-                false => self.insert_stake(new_account.pubkey, ststake),
+            //during extract push the new update or
+            //don't add account change that has been done in next epoch.
+            let insert_stake =
+                !self.extracted || ststake.last_update_slot > self.current_end_epoch_slot;
+            match insert_stake {
+                false => self.updates.push((new_account.pubkey, ststake)),
+                true => self.insert_stake(new_account.pubkey, ststake),
             }
         }
 

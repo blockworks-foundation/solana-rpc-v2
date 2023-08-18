@@ -227,7 +227,7 @@ async fn run_loop<F: Interceptor>(mut client: GeyserGrpcClient<F>) -> anyhow::Re
                         //process the message
                         match message {
                             Ok(msg) => {
-                                log::info!("new message: {msg:?}");
+                                //log::info!("new message: {msg:?}");
                                 match msg.update_oneof {
                                     Some(UpdateOneof::Account(account)) => {
                                         //store new account stake.
@@ -251,6 +251,11 @@ async fn run_loop<F: Interceptor>(mut client: GeyserGrpcClient<F>) -> anyhow::Re
                                                 continue;
                                             };
 
+                                            //change epoch. Change manually then update using RPC.
+                                            current_epoch.epoch +=1;
+                                            current_epoch.slot_index += current_epoch.slots_in_epoch + 1;
+                                            log::info!("End slot epoch update calculated next epoch:{current_epoch:?}");
+
                                             //calculate schedule in a dedicated thread.
                                             let move_epoch = current_epoch.clone();
                                             let jh = tokio::task::spawn_blocking(move || {
@@ -259,9 +264,6 @@ async fn run_loop<F: Interceptor>(mut client: GeyserGrpcClient<F>) -> anyhow::Re
                                             });
                                             spawned_task_result.push(jh);
 
-                                            //change epoch. Change manually then update using RPC.
-                                            current_epoch.epoch +=1;
-                                            current_epoch.slot_index += current_epoch.slots_in_epoch + 1;
                                             spawned_task_toexec.push(futures::future::ready(TaskToExec::RpcGetCurrentEpoch));
 
 

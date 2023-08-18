@@ -15,7 +15,7 @@ pub fn calculate_leader_schedule_from_stake_map(
     current_epoch_info: &EpochInfo,
 ) -> anyhow::Result<LeaderSchedule> {
     let mut stakes = HashMap::<Pubkey, u64>::new();
-    log::trace!("calculate_leader_schedule_from_stake_map stake_map:{stake_map:?} current_epoch_info:{current_epoch_info:?}");
+    //log::trace!("calculate_leader_schedule_from_stake_map stake_map:{stake_map:?} current_epoch_info:{current_epoch_info:?}");
     for storestake in stake_map.values() {
         //log::info!("Program_accounts stake:{stake:#?}");
         //On test validator all stakes are attributes to an account with stake.delegation.activation_epoch == MAX_EPOCH_VALUE.
@@ -84,7 +84,7 @@ fn sort_stakes(stakes: &mut Vec<(Pubkey, u64)>) {
 
 pub fn verify_schedule(schedule: LeaderSchedule, rpc_url: String) -> anyhow::Result<()> {
     let rpc_client = RpcClient::new_with_commitment(rpc_url, CommitmentConfig::confirmed());
-    let Some(mut leader_schedule_finalized) = rpc_client.get_leader_schedule(None)? else {
+    let Some(rpc_leader_schedule) = rpc_client.get_leader_schedule(None)? else {
         log::info!("verify_schedule RPC return no schedule. Try later.");
         return Ok(());
     };
@@ -99,7 +99,7 @@ pub fn verify_schedule(schedule: LeaderSchedule, rpc_url: String) -> anyhow::Res
         .map(|va| (va.node_pubkey, va.vote_pubkey))
         .collect::<HashMap<String, String>>();
 
-    log::info!("note_vote_table:{note_vote_table:?}");
+    //log::info!("note_vote_table:{note_vote_table:?}");
 
     //map leaderscheudle to HashMap<PubKey, Vec<slot>>
     let mut input_leader_schedule: HashMap<Pubkey, Vec<usize>> = HashMap::new();
@@ -111,7 +111,7 @@ pub fn verify_schedule(schedule: LeaderSchedule, rpc_url: String) -> anyhow::Res
     }
 
     //map rpc leader schedule node pubkey to vote account
-    let mut leader_schedule_finalized: HashMap<&String, Vec<usize>> = leader_schedule_finalized.into_iter().filter_map(|(pk, slots)| match note_vote_table.get(&pk) {
+    let mut rpc_leader_schedule: HashMap<&String, Vec<usize>> = rpc_leader_schedule.into_iter().filter_map(|(pk, slots)| match note_vote_table.get(&pk) {
             Some(vote_account) => Some((vote_account,slots)),
             None => {
                 log::warn!("verify_schedule RPC get_leader_schedule return some Node account:{pk} that are not mapped by rpc get_vote_accounts");
@@ -119,10 +119,10 @@ pub fn verify_schedule(schedule: LeaderSchedule, rpc_url: String) -> anyhow::Res
             },
         }).collect();
 
-    log::trace!("verify_schedule input_leader_schedule:{input_leader_schedule:?} leader_schedule_finalized:{leader_schedule_finalized:?}");
+    //log::trace!("verify_schedule calculated_leader_schedule:{input_leader_schedule:?} RPC leader schedule:{rpc_leader_schedule:?}");
 
     let mut vote_account_in_error: Vec<Pubkey> = input_leader_schedule.into_iter().filter_map(|(input_vote_key, mut input_slot_list)| {
-        let Some(mut rpc_strake_list) = leader_schedule_finalized.remove(&input_vote_key.to_string()) else {
+        let Some(mut rpc_strake_list) = rpc_leader_schedule.remove(&input_vote_key.to_string()) else {
             log::warn!("verify_schedule vote account not found in RPC:{input_vote_key}");
             return Some(input_vote_key);
         };
@@ -136,13 +136,13 @@ pub fn verify_schedule(schedule: LeaderSchedule, rpc_url: String) -> anyhow::Res
         }
     }).collect();
 
-    if !leader_schedule_finalized.is_empty() {
+    if !rpc_leader_schedule.is_empty() {
         log::warn!(
             "verify_schedule RPC vote account not present in calculated schedule:{:?}",
-            leader_schedule_finalized.keys()
+            rpc_leader_schedule.keys()
         );
         vote_account_in_error.append(
-            &mut leader_schedule_finalized
+            &mut rpc_leader_schedule
                 .keys()
                 .map(|sk| Pubkey::from_str(sk).unwrap())
                 .collect::<Vec<Pubkey>>(),
