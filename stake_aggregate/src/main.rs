@@ -233,7 +233,7 @@ async fn run_loop<F: Interceptor>(mut client: GeyserGrpcClient<F>) -> anyhow::Re
                                         //store new account stake.
                                         if let Some(account) = read_account(account, current_slot.confirmed_slot) {
                                             log::trace!("Geyser receive new account");
-                                            if let Err(err) = stakestore.add_stake(account) {
+                                            if let Err(err) = stakestore.add_stake(account, current_epoch.slot_index) {
                                                 log::warn!("Can't add new stake from account data err:{}", err);
                                                 continue;
                                             }
@@ -254,7 +254,10 @@ async fn run_loop<F: Interceptor>(mut client: GeyserGrpcClient<F>) -> anyhow::Re
                                             //change epoch. Change manually then update using RPC.
                                             current_epoch.epoch +=1;
                                             current_epoch.slot_index += current_epoch.slots_in_epoch + 1;
+
                                             log::info!("End slot epoch update calculated next epoch:{current_epoch:?}");
+
+
 
                                             //calculate schedule in a dedicated thread.
                                             let move_epoch = current_epoch.clone();
