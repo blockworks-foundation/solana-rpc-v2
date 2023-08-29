@@ -1,5 +1,8 @@
 //RUST_BACKTRACE=1 RUST_LOG=stake_aggregate=trace cargo run
+use crate::stakestore::extract_stakestore;
+use crate::stakestore::merge_stakestore;
 use crate::stakestore::StakeStore;
+use anyhow::bail;
 use futures_util::stream::FuturesUnordered;
 use futures_util::StreamExt;
 use solana_client::client_error::ClientError;
@@ -10,6 +13,7 @@ use solana_sdk::commitment_config::CommitmentConfig;
 use solana_sdk::epoch_info::EpochInfo;
 use solana_sdk::pubkey::Pubkey;
 use solana_sdk::stake::state::Delegation;
+use solana_sdk::vote::state::VoteState;
 use std::collections::HashMap;
 use yellowstone_grpc_client::GeyserGrpcClient;
 use yellowstone_grpc_proto::geyser::CommitmentLevel;
@@ -27,10 +31,10 @@ type Slot = u64;
 
 //WebSocket URL: ws://localhost:8900/ (computed)
 
-//const GRPC_URL: &str = "http://127.0.0.0:10000";
-const GRPC_URL: &str = "http://192.168.88.31:10000";
-//const RPC_URL: &str = "http://localhost:8899";
-const RPC_URL: &str = "http://192.168.88.31:8899";
+const GRPC_URL: &str = "http://127.0.0.0:10000";
+//const GRPC_URL: &str = "http://192.168.88.31:10000";
+const RPC_URL: &str = "http://localhost:8899";
+//const RPC_URL: &str = "http://192.168.88.31:8899";
 
 //const RPC_URL: &str = "https://api.mainnet-beta.solana.com";
 //const RPC_URL: &str = "https://api.testnet.solana.com";
@@ -63,23 +67,6 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-fn extract_stakestore(stakestore: &mut StakeStore) -> anyhow::Result<crate::stakestore::StakeMap> {
-    let new_store = std::mem::take(stakestore);
-    let (new_store, stake_map) = new_store.extract()?;
-    *stakestore = new_store;
-    Ok(stake_map)
-}
-
-fn merge_stakestore(
-    stakestore: &mut StakeStore,
-    stake_map: crate::stakestore::StakeMap,
-) -> anyhow::Result<()> {
-    let new_store = std::mem::take(stakestore);
-    let new_store = new_store.merge_stake(stake_map)?;
-    *stakestore = new_store;
-    Ok(())
-}
-
 async fn run_loop<F: Interceptor>(mut client: GeyserGrpcClient<F>) -> anyhow::Result<()> {
     //local vars
     let mut current_slot: CurrentSlot = Default::default();
@@ -98,6 +85,7 @@ async fn run_loop<F: Interceptor>(mut client: GeyserGrpcClient<F>) -> anyhow::Re
 
     spawned_task_toexec.push(futures::future::ready(TaskToExec::RpcGetPa));
 
+    //subscribe Geyser grpc
     let mut slots = HashMap::new();
     slots.insert("client".to_string(), SubscribeRequestFilterSlots {});
 
@@ -107,7 +95,10 @@ async fn run_loop<F: Interceptor>(mut client: GeyserGrpcClient<F>) -> anyhow::Re
         "client".to_owned(),
         SubscribeRequestFilterAccounts {
             account: vec![],
-            owner: vec![solana_sdk::stake::program::id().to_string()],
+            owner: vec![
+                solana_sdk::stake::program::ID.to_string(),
+                solana_sdk::vote::program::ID.to_string(),
+            ],
             filters: vec![],
         },
     );
@@ -186,10 +177,12 @@ async fn run_loop<F: Interceptor>(mut client: GeyserGrpcClient<F>) -> anyhow::Re
                             log::info!("Epoch schedule aborted because a getPA is currently running.");
                             continue;
                         };
-                        let move_epoch = current_epoch.clone();
-                        let jh = tokio::task::spawn_blocking(move || {
-                            let schedule = crate::leader_schedule::calculate_leader_schedule_from_stake_map(&stake_map, &move_epoch);
-                            TaskResult::ScheduleResult(schedule.ok(), stake_map)
+                        let jh = tokio::task::spawn_blocking({
+                            let move_epoch = current_epoch.clone();
+                            move || {
+                                let schedule = crate::leader_schedule::calculate_leader_schedule_from_stake_map(&stake_map, &move_epoch);
+                                TaskResult::ScheduleResult(schedule.ok(), stake_map)
+                            }
                         });
                         spawned_task_result.push(jh);
                         //end test
@@ -232,10 +225,24 @@ async fn run_loop<F: Interceptor>(mut client: GeyserGrpcClient<F>) -> anyhow::Re
                                     Some(UpdateOneof::Account(account)) => {
                                         //store new account stake.
                                         if let Some(account) = read_account(account, current_slot.confirmed_slot) {
-                                            log::trace!("Geyser receive new account");
-                                            if let Err(err) = stakestore.add_stake(account, current_epoch.slot_index) {
-                                                log::warn!("Can't add new stake from account data err:{}", err);
-                                                continue;
+                                            //log::trace!("Geyser receive new account");
+                                            match account.owner {
+                                                solana_sdk::stake::program::ID => {
+                                                    if let Err(err) = stakestore.add_stake(account, current_epoch.slot_index) {
+                                                        log::warn!("Can't add new stake from account data err:{}", err);
+                                                        continue;
+                                                    }
+                                                }
+                                                solana_sdk::vote::program::ID => {
+                                                    //process vote accout notification
+                                                    match account.read_vote() {
+                                                        Ok(vote) => {
+                                                            //log::trace!("receive vote account with data:{vote:?}");
+                                                        },
+                                                        Err(err) => log::warn!("Error during vote account deserialization:{err}"),
+                                                    }
+                                                }
+                                                _ => log::warn!("receive an account notification from a unknown owner:{account:?}"),
                                             }
                                         }
                                     }
@@ -331,6 +338,13 @@ pub struct AccountPretty {
 impl AccountPretty {
     fn read_stake(&self) -> anyhow::Result<Option<Delegation>> {
         crate::stakestore::read_stake_from_account_data(self.data.as_slice())
+    }
+    fn read_vote(&self) -> anyhow::Result<VoteState> {
+        if self.data.is_empty() {
+            log::warn!("Vote account with empty data. Can't read vote.");
+            bail!("Error: read VA account with empty data");
+        }
+        Ok(VoteState::deserialize(&self.data)?)
     }
 }
 

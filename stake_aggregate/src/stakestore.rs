@@ -11,6 +11,20 @@ use crate::Pubkey;
 
 pub type StakeMap = HashMap<Pubkey, StoredStake>;
 
+pub fn extract_stakestore(stakestore: &mut StakeStore) -> anyhow::Result<StakeMap> {
+    let new_store = std::mem::take(stakestore);
+    let (new_store, stake_map) = new_store.extract()?;
+    *stakestore = new_store;
+    Ok(stake_map)
+}
+
+pub fn merge_stakestore(stakestore: &mut StakeStore, stake_map: StakeMap) -> anyhow::Result<()> {
+    let new_store = std::mem::take(stakestore);
+    let new_store = new_store.merge_stake(stake_map)?;
+    *stakestore = new_store;
+    Ok(())
+}
+
 fn stake_map_insert_stake(map: &mut StakeMap, stake_account: Pubkey, stake: StoredStake) {
     match map.entry(stake_account) {
         // If value already exists, then increment it by one
@@ -146,8 +160,8 @@ pub fn merge_program_account_in_strake_map(
 
 pub fn read_stake_from_account_data(mut data: &[u8]) -> anyhow::Result<Option<Delegation>> {
     if data.is_empty() {
-        log::warn!("read stake from account empty stake account.");
-        bail!("Error: read stake of PA account with empty data");
+        log::warn!("Stake account with empty data. Can't read stake.");
+        bail!("Error: read VA account with empty data");
     }
     match StakeState::deserialize(&mut data)? {
         StakeState::Stake(_, stake) => Ok(Some(stake.delegation)),
