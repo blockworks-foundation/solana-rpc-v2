@@ -3,11 +3,10 @@ use crate::Slot;
 use anyhow::bail;
 use borsh::BorshDeserialize;
 use solana_sdk::account::Account;
+use solana_sdk::pubkey::Pubkey;
 use solana_sdk::stake::state::Delegation;
 use solana_sdk::stake::state::StakeState;
 use std::collections::HashMap;
-
-use crate::Pubkey;
 
 pub type StakeMap = HashMap<Pubkey, StoredStake>;
 

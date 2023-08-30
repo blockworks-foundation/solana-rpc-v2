@@ -15,6 +15,7 @@ use solana_sdk::pubkey::Pubkey;
 use solana_sdk::stake::state::Delegation;
 use solana_sdk::vote::state::VoteState;
 use std::collections::HashMap;
+use tokio::time::Duration;
 use yellowstone_grpc_client::GeyserGrpcClient;
 use yellowstone_grpc_proto::geyser::CommitmentLevel;
 use yellowstone_grpc_proto::geyser::SubscribeUpdateAccount;
@@ -25,16 +26,21 @@ use yellowstone_grpc_proto::{
 };
 
 mod leader_schedule;
+mod rpc;
 mod stakestore;
 
 type Slot = u64;
 
 //WebSocket URL: ws://localhost:8900/ (computed)
 
-const GRPC_URL: &str = "http://127.0.0.0:10000";
+//const GRPC_URL: &str = "http://127.0.0.0:10000";
 //const GRPC_URL: &str = "http://192.168.88.31:10000";
-const RPC_URL: &str = "http://localhost:8899";
+//const RPC_URL: &str = "http://localhost:8899";
 //const RPC_URL: &str = "http://192.168.88.31:8899";
+
+//japan server
+const GRPC_URL: &str = "http://147.28.169.13:10000";
+const RPC_URL: &str = "http://147.28.169.13:8899";
 
 //const RPC_URL: &str = "https://api.mainnet-beta.solana.com";
 //const RPC_URL: &str = "https://api.testnet.solana.com";
@@ -83,6 +89,7 @@ async fn run_loop<F: Interceptor>(mut client: GeyserGrpcClient<F>) -> anyhow::Re
     let mut spawned_task_toexec = FuturesUnordered::new();
     let mut spawned_task_result = FuturesUnordered::new();
 
+    //use to set an initial state of all PA
     spawned_task_toexec.push(futures::future::ready(TaskToExec::RpcGetPa));
 
     //subscribe Geyser grpc
@@ -123,9 +130,11 @@ async fn run_loop<F: Interceptor>(mut client: GeyserGrpcClient<F>) -> anyhow::Re
                 let jh = tokio::spawn(async move {
                     match to_exec {
                         TaskToExec::RpcGetPa => {
-                            log::trace!("TaskToExec RpcGetPa start");
-                            let rpc_client = RpcClient::new_with_commitment(RPC_URL.to_string(), CommitmentConfig::finalized());
+                            log::info!("TaskToExec RpcGetPa start");
+                            let rpc_client = RpcClient::new_with_timeout_and_commitment(RPC_URL.to_string(), Duration::from_secs(600), CommitmentConfig::finalized());
                             let res = rpc_client.get_program_accounts(&solana_sdk::stake::program::id()).await;
+                            log::info!("TaskToExec RpcGetPa END");
+                            //let res = crate::rpc::get_program_accounts(RPC_URL, &solana_sdk::stake::program::id()).await;
                             TaskResult::RpcGetPa(res)
                         },
                         TaskToExec::RpcGetCurrentEpoch => {
@@ -156,6 +165,12 @@ async fn run_loop<F: Interceptor>(mut client: GeyserGrpcClient<F>) -> anyhow::Re
                         });
                         spawned_task_result.push(jh);
                     }
+                    //getPA can fail should be retarted.
+                    Ok(TaskResult::RpcGetPa(Err(err))) => {
+                        log::warn!("RPC call getPA return invalid result: {err:?}");
+                        //get pa can fail should be retarted.
+                        spawned_task_toexec.push(futures::future::ready(TaskToExec::RpcGetPa));
+                    }
                     Ok(TaskResult::CurrentEpoch(Ok(epoch_info))) => {
                         log::trace!("Run_loop update new epoch:{epoch_info:?}");
                         current_epoch = epoch_info;
@@ -169,7 +184,7 @@ async fn run_loop<F: Interceptor>(mut client: GeyserGrpcClient<F>) -> anyhow::Re
                             spawned_task_toexec.push(futures::future::ready(TaskToExec::RpcGetPa));
                             continue;
                         };
-                        log::trace!("Run_loop Program account stake merge END");
+                        log::info!("Run_loop Program account stake merge END");
 
                         //TODO REMOVE
                         //To test verify the schedule
@@ -287,7 +302,8 @@ async fn run_loop<F: Interceptor>(mut client: GeyserGrpcClient<F>) -> anyhow::Re
                             }
                             Err(error) => {
                                 log::error!("Geyser stream receive an error has message: {error:?}, try to reconnect and resynchronize.");
-                                break;
+                                //todo reconnect and resynchronize.
+                                //break;
                             }
                         }
                      }
@@ -358,7 +374,7 @@ fn read_account(
         };
 
     if geyser_account.slot != current_slot {
-        log::info!(
+        log::trace!(
             "Get geyser account on a different slot:{} of the current:{current_slot}",
             geyser_account.slot
         );
