@@ -112,8 +112,8 @@ async fn run_loop<F: Interceptor>(mut client: GeyserGrpcClient<F>) -> anyhow::Re
 
     let mut confirmed_stream = client
         .subscribe_once(
-            slots,
-            accounts,           //accounts
+            slots.clone(),
+            accounts.clone(),   //accounts
             Default::default(), //tx
             Default::default(), //entry
             Default::default(), //full block
@@ -294,7 +294,7 @@ async fn run_loop<F: Interceptor>(mut client: GeyserGrpcClient<F>) -> anyhow::Re
 
                                         }
                                     }
-                                    Some(UpdateOneof::Ping(_)) => (),
+                                    Some(UpdateOneof::Ping(_)) => log::info!("UpdateOneof::Ping"),
                                     bad_msg => {
                                         log::info!("Geyser stream unexpected message received:{:?}",bad_msg);
                                     }
@@ -309,14 +309,30 @@ async fn run_loop<F: Interceptor>(mut client: GeyserGrpcClient<F>) -> anyhow::Re
                      }
                      None => {
                         log::warn!("The geyser stream close try to reconnect and resynchronize.");
-                        break; //TODO reconnect.
+                        let new_confirmed_stream = client
+                        .subscribe_once(
+                            slots.clone(),
+                            accounts.clone(),           //accounts
+                            Default::default(), //tx
+                            Default::default(), //entry
+                            Default::default(), //full block
+                            Default::default(), //block meta
+                            Some(CommitmentLevel::Confirmed),
+                            vec![],
+                        )
+                        .await?;
+
+                        confirmed_stream = new_confirmed_stream;
+                        log::info!("reconnection done");
+
+                        //TODO resynchronize.
                      }
                 }
             }
         }
     }
 
-    Ok(())
+    //Ok(())
 }
 
 #[derive(Default, Debug)]
