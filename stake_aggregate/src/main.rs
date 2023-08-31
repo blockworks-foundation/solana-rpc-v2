@@ -124,7 +124,7 @@ async fn run_loop<F: Interceptor>(mut client: GeyserGrpcClient<F>) -> anyhow::Re
         .await?;
 
     //log current data at interval
-    let mut log_interval = tokio::time::interval(Duration::from_millis(1000));
+    let mut log_interval = tokio::time::interval(Duration::from_millis(10000));
 
     loop {
         tokio::select! {
@@ -272,7 +272,7 @@ async fn run_loop<F: Interceptor>(mut client: GeyserGrpcClient<F>) -> anyhow::Re
                                     }
                                     Some(UpdateOneof::Slot(slot)) => {
                                         //update current slot
-                                        log::info!("Processing slot: {:?} current slot:{:?}", slot, current_slot);
+                                        //log::info!("Processing slot: {:?} current slot:{:?}", slot, current_slot);
                                         current_slot.update_slot(&slot);
 
                                         if current_slot.confirmed_slot == current_epoch.absolute_slot + current_epoch.slots_in_epoch {
@@ -353,10 +353,24 @@ struct CurrentSlot {
 
 impl CurrentSlot {
     fn update_slot(&mut self, slot: &SubscribeUpdateSlot) {
+        let updade = |current_slot: &mut u64, new_slot: u64| {
+            //verify that the slot is consecutif
+            if *current_slot != 0 && new_slot != *current_slot + 1 {
+                log::warn!(
+                    "not consecutif slot send: current_slot:{} new_slot{}",
+                    current_slot,
+                    new_slot
+                );
+            }
+            *current_slot = new_slot
+        };
+
         match slot.status() {
-            CommitmentLevel::Processed => self.processed_slot = slot.slot,
-            CommitmentLevel::Confirmed => self.confirmed_slot = slot.slot,
-            CommitmentLevel::Finalized => self.finalized_slot = slot.slot,
+            CommitmentLevel::Processed => updade(&mut self.processed_slot, slot.slot),
+
+            CommitmentLevel::Confirmed => updade(&mut self.confirmed_slot, slot.slot),
+
+            CommitmentLevel::Finalized => updade(&mut self.finalized_slot, slot.slot),
         }
     }
 }

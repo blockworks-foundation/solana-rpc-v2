@@ -92,63 +92,99 @@ pub fn verify_schedule(schedule: LeaderSchedule, rpc_url: String) -> anyhow::Res
     log::info!("");
 
     let vote_account = rpc_client.get_vote_accounts()?;
-    let note_vote_table = vote_account
+    let node_vote_table = vote_account
         .current
         .into_iter()
         .chain(vote_account.delinquent.into_iter())
         .map(|va| (va.node_pubkey, va.vote_pubkey))
         .collect::<HashMap<String, String>>();
 
-    //log::info!("note_vote_table:{note_vote_table:?}");
+    //log::info!("node_vote_table:{node_vote_table:?}");
 
     //map leaderscheudle to HashMap<PubKey, Vec<slot>>
-    let mut input_leader_schedule: HashMap<Pubkey, Vec<usize>> = HashMap::new();
+    let mut input_leader_schedule: HashMap<String, Vec<usize>> = HashMap::new();
     for (slot, pubkey) in schedule.get_slot_leaders().iter().copied().enumerate() {
         input_leader_schedule
-            .entry(pubkey)
+            .entry(pubkey.to_string())
             .or_insert(vec![])
             .push(slot);
     }
 
+    if let Err(err) = save_schedule_on_file("generated", &input_leader_schedule) {
+        log::error!("Error during saving generated schedule:{err}");
+    }
+
     //map rpc leader schedule node pubkey to vote account
-    let mut rpc_leader_schedule: HashMap<&String, Vec<usize>> = rpc_leader_schedule.into_iter().filter_map(|(pk, slots)| match note_vote_table.get(&pk) {
-            Some(vote_account) => Some((vote_account,slots)),
+    let mut rpc_leader_schedule: HashMap<String, Vec<usize>> = rpc_leader_schedule.into_iter().filter_map(|(pk, slots)| match node_vote_table.get(&pk) {
+            Some(vote_account) => Some((vote_account.clone(),slots)),
             None => {
                 log::warn!("verify_schedule RPC get_leader_schedule return some Node account:{pk} that are not mapped by rpc get_vote_accounts");
                 None
             },
         }).collect();
 
-    //log::trace!("verify_schedule calculated_leader_schedule:{input_leader_schedule:?} RPC leader schedule:{rpc_leader_schedule:?}");
+    if let Err(err) = save_schedule_on_file("rpc", &rpc_leader_schedule) {
+        log::error!("Error during saving generated schedule:{err}");
+    } //log::trace!("verify_schedule calculated_leader_schedule:{input_leader_schedule:?} RPC leader schedule:{rpc_leader_schedule:?}");
 
-    let mut vote_account_in_error: Vec<Pubkey> = input_leader_schedule.into_iter().filter_map(|(input_vote_key, mut input_slot_list)| {
-        let Some(mut rpc_strake_list) = rpc_leader_schedule.remove(&input_vote_key.to_string()) else {
+    let mut vote_account_in_error: Vec<String> = input_leader_schedule
+        .into_iter()
+        .filter_map(|(input_vote_key, mut input_slot_list)| {
+            let Some(mut rpc_strake_list) = rpc_leader_schedule.remove(&input_vote_key) else {
             log::warn!("verify_schedule vote account not found in RPC:{input_vote_key}");
             return Some(input_vote_key);
         };
-        input_slot_list.sort();
-        rpc_strake_list.sort();
-        if input_slot_list.into_iter().zip(rpc_strake_list.into_iter()).any(|(in_v, rpc)| in_v != rpc) {
-            log::warn!("verify_schedule bad slots for {input_vote_key}"); // Caluclated:{input_slot_list:?} rpc:{rpc_strake_list:?}
-            Some(input_vote_key)
-        } else {
-            None
-        }
-    }).collect();
+            input_slot_list.sort();
+            rpc_strake_list.sort();
+            if input_slot_list
+                .into_iter()
+                .zip(rpc_strake_list.into_iter())
+                .any(|(in_v, rpc)| in_v != rpc)
+            {
+                log::warn!("verify_schedule bad slots for {input_vote_key}"); // Caluclated:{input_slot_list:?} rpc:{rpc_strake_list:?}
+                Some(input_vote_key)
+            } else {
+                None
+            }
+        })
+        .collect();
 
     if !rpc_leader_schedule.is_empty() {
         log::warn!(
             "verify_schedule RPC vote account not present in calculated schedule:{:?}",
             rpc_leader_schedule.keys()
         );
-        vote_account_in_error.append(
-            &mut rpc_leader_schedule
-                .keys()
-                .map(|sk| Pubkey::from_str(sk).unwrap())
-                .collect::<Vec<Pubkey>>(),
-        );
+        vote_account_in_error
+            .append(&mut rpc_leader_schedule.keys().cloned().collect::<Vec<String>>());
     }
 
     log::info!("verify_schedule these account are wrong:{vote_account_in_error:?}");
+    Ok(())
+}
+
+use std::fs::File;
+use std::io::Write;
+use std::time::{SystemTime, UNIX_EPOCH};
+
+fn save_schedule_on_file(name: &str, map: &HashMap<String, Vec<usize>>) -> anyhow::Result<()> {
+    let serialized_map = serde_json::to_string(map).unwrap();
+
+    let start = SystemTime::now();
+    let since_the_epoch = start
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or(std::time::Duration::from_secs(1234));
+
+    // Format the timestamp as seconds and sub-seconds (nanoseconds)
+    let filename = format!(
+        "schedule_{name}_{}_{}.txt",
+        since_the_epoch.as_secs(),
+        since_the_epoch.subsec_nanos()
+    );
+
+    // Write to the file
+    let mut file = File::create(filename)?;
+    file.write_all(serialized_map.as_bytes())?;
+    //log::info!("Files: {file_name}");
+    //log::info!("{}", serialized_map);
     Ok(())
 }
