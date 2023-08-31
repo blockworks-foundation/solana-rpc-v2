@@ -84,6 +84,8 @@ async fn run_loop<F: Interceptor>(mut client: GeyserGrpcClient<F>) -> anyhow::Re
         // Fetch current epoch
         rpc_client.get_epoch_info().await?
     };
+    let mut next_epoch_slot =
+        current_epoch.slots_in_epoch - current_epoch.slot_index + current_epoch.absolute_slot;
     log::info!("Run_loop init current_epoch:{current_epoch:?}");
 
     let mut spawned_task_toexec = FuturesUnordered::new();
@@ -130,7 +132,7 @@ async fn run_loop<F: Interceptor>(mut client: GeyserGrpcClient<F>) -> anyhow::Re
         tokio::select! {
             //log interval
             _ = log_interval.tick() => {
-                log::info!("Run_loop update new epoch:{current_epoch:?} current slot:{current_slot:?}");
+                log::info!("Run_loop update new epoch:{current_epoch:?} current slot:{current_slot:?} next epoch slot:{next_epoch_slot}");
                 log::info!("Change epoch equality {} == {}", current_slot.confirmed_slot, current_epoch.absolute_slot + current_epoch.slots_in_epoch);
                 log::info!("number of stake accounts:{}", stakestore.nb_stake_account());
             }
@@ -181,8 +183,14 @@ async fn run_loop<F: Interceptor>(mut client: GeyserGrpcClient<F>) -> anyhow::Re
                         spawned_task_toexec.push(futures::future::ready(TaskToExec::RpcGetPa));
                     }
                     Ok(TaskResult::CurrentEpoch(Ok(epoch_info))) => {
-                        log::info!("Run_loop update new epoch:{epoch_info:?} current slot:{current_slot:?}");
                         current_epoch = epoch_info;
+
+                        //only update new epoch slot if the RPC call return the next epoch. Some time it still return the current epoch.
+                        let new_epoch_slot = current_epoch.slots_in_epoch - current_epoch.slot_index + current_epoch.absolute_slot;
+                        if next_epoch_slot <= new_epoch_slot {
+                            next_epoch_slot = new_epoch_slot;
+                        }
+                        log::info!("Run_loop update new epoch:{current_epoch:?} current slot:{current_slot:?} next_epoch_slot:{next_epoch_slot}");
                     }
                     Ok(TaskResult::MergePAList(stake_map)) => {
                         if let Err(err) = merge_stakestore(&mut stakestore, stake_map) {
@@ -275,8 +283,8 @@ async fn run_loop<F: Interceptor>(mut client: GeyserGrpcClient<F>) -> anyhow::Re
                                         //log::info!("Processing slot: {:?} current slot:{:?}", slot, current_slot);
                                         current_slot.update_slot(&slot);
 
-                                        if current_slot.confirmed_slot == current_epoch.absolute_slot + current_epoch.slots_in_epoch {
-                                            log::info!("End epoch slot. Calculate schedule.");
+                                        if current_slot.confirmed_slot >= next_epoch_slot { //slot can be non consecutif.
+                                            log::info!("End epoch slot. Calculate schedule at current slot:{}", current_slot.confirmed_slot);
                                             let Ok(stake_map) = extract_stakestore(&mut stakestore) else {
                                                 log::info!("Epoch schedule aborted because a getPA is currently running.");
                                                 continue;
@@ -285,6 +293,8 @@ async fn run_loop<F: Interceptor>(mut client: GeyserGrpcClient<F>) -> anyhow::Re
                                             //change epoch. Change manually then update using RPC.
                                             current_epoch.epoch +=1;
                                             current_epoch.slot_index += current_epoch.slots_in_epoch + 1;
+
+                                            next_epoch_slot = next_epoch_slot + current_epoch.slots_in_epoch; //set to next epochs.
 
                                             log::info!("End slot epoch update calculated next epoch:{current_epoch:?}");
 
@@ -353,11 +363,11 @@ struct CurrentSlot {
 
 impl CurrentSlot {
     fn update_slot(&mut self, slot: &SubscribeUpdateSlot) {
-        let updade = |current_slot: &mut u64, new_slot: u64| {
+        let updade = |commitment: &str, current_slot: &mut u64, new_slot: u64| {
             //verify that the slot is consecutif
             if *current_slot != 0 && new_slot != *current_slot + 1 {
                 log::warn!(
-                    "not consecutif slot send: current_slot:{} new_slot{}",
+                    "At {commitment} not consecutif slot send: current_slot:{} new_slot{}",
                     current_slot,
                     new_slot
                 );
@@ -366,11 +376,11 @@ impl CurrentSlot {
         };
 
         match slot.status() {
-            CommitmentLevel::Processed => updade(&mut self.processed_slot, slot.slot),
+            CommitmentLevel::Processed => updade("Processed", &mut self.processed_slot, slot.slot),
 
-            CommitmentLevel::Confirmed => updade(&mut self.confirmed_slot, slot.slot),
+            CommitmentLevel::Confirmed => updade("Confirmed", &mut self.confirmed_slot, slot.slot),
 
-            CommitmentLevel::Finalized => updade(&mut self.finalized_slot, slot.slot),
+            CommitmentLevel::Finalized => updade("Finalized", &mut self.finalized_slot, slot.slot),
         }
     }
 }
