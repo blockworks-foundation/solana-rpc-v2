@@ -33,10 +33,10 @@ type Slot = u64;
 
 //WebSocket URL: ws://localhost:8900/ (computed)
 
-const GRPC_URL: &str = "http://127.0.0.0:10000";
-//const GRPC_URL: &str = "http://192.168.88.31:10000";
-const RPC_URL: &str = "http://localhost:8899";
-//const RPC_URL: &str = "http://192.168.88.31:8899";
+//const GRPC_URL: &str = "http://127.0.0.0:10000";
+const GRPC_URL: &str = "http://192.168.88.31:10000";
+//const RPC_URL: &str = "http://localhost:8899";
+const RPC_URL: &str = "http://192.168.88.31:8899";
 
 //japan server
 //const GRPC_URL: &str = "http://147.28.169.13:10000";
@@ -84,7 +84,7 @@ async fn run_loop<F: Interceptor>(mut client: GeyserGrpcClient<F>) -> anyhow::Re
         // Fetch current epoch
         rpc_client.get_epoch_info().await?
     };
-    let mut current_epoch_end_slot =
+    let mut next_epoch_start_slot =
         current_epoch.slots_in_epoch - current_epoch.slot_index + current_epoch.absolute_slot;
     log::info!("Run_loop init current_epoch:{current_epoch:?}");
 
@@ -106,7 +106,7 @@ async fn run_loop<F: Interceptor>(mut client: GeyserGrpcClient<F>) -> anyhow::Re
             account: vec![],
             owner: vec![
                 solana_sdk::stake::program::ID.to_string(),
-                solana_sdk::vote::program::ID.to_string(),
+                //solana_sdk::vote::program::ID.to_string(),
             ],
             filters: vec![],
         },
@@ -126,14 +126,14 @@ async fn run_loop<F: Interceptor>(mut client: GeyserGrpcClient<F>) -> anyhow::Re
         .await?;
 
     //log current data at interval
-    let mut log_interval = tokio::time::interval(Duration::from_millis(10000));
+    let mut log_interval = tokio::time::interval(Duration::from_millis(60000));
 
     loop {
         tokio::select! {
             //log interval
             _ = log_interval.tick() => {
-                log::info!("Run_loop update new epoch:{current_epoch:?} current slot:{current_slot:?} next epoch slot:{current_epoch_end_slot}");
-                log::info!("Change epoch equality {} >= {}", current_slot.confirmed_slot, current_epoch_end_slot);
+                log::info!("Run_loop update new epoch:{current_epoch:?} current slot:{current_slot:?} next epoch start slot:{next_epoch_start_slot}");
+                log::info!("Change epoch equality {} >= {}", current_slot.confirmed_slot, next_epoch_start_slot);
                 log::info!("number of stake accounts:{}", stakestore.nb_stake_account());
             }
             //Execute RPC call in another task
@@ -149,7 +149,10 @@ async fn run_loop<F: Interceptor>(mut client: GeyserGrpcClient<F>) -> anyhow::Re
                             TaskResult::RpcGetPa(res)
                         },
                         TaskToExec::RpcGetCurrentEpoch => {
+                            //TODO remove no need epoch is calculated.
                             log::info!("TaskToExec RpcGetCurrentEpoch start");
+                            //wait 1 sec to be sure RPC change epoch
+                            tokio::time::sleep(Duration::from_secs(1)).await;
                             let rpc_client = RpcClient::new_with_commitment(RPC_URL.to_string(), CommitmentConfig::finalized());
                             let res = rpc_client.get_epoch_info().await;
                             TaskResult::CurrentEpoch(res)
@@ -183,14 +186,16 @@ async fn run_loop<F: Interceptor>(mut client: GeyserGrpcClient<F>) -> anyhow::Re
                         spawned_task_toexec.push(futures::future::ready(TaskToExec::RpcGetPa));
                     }
                     Ok(TaskResult::CurrentEpoch(Ok(epoch_info))) => {
-                        current_epoch = epoch_info;
-
+                        //TODO remove no need epoch is calculated.
                         //only update new epoch slot if the RPC call return the next epoch. Some time it still return the current epoch.
-                        let new_epoch_slot = current_epoch.slots_in_epoch - current_epoch.slot_index + current_epoch.absolute_slot;
-                        if current_epoch_end_slot <= new_epoch_slot {
-                            current_epoch_end_slot = new_epoch_slot;
+                        if current_epoch.epoch <= epoch_info.epoch {
+                            current_epoch = epoch_info;
+                            next_epoch_start_slot = current_epoch.slots_in_epoch - current_epoch.slot_index + current_epoch.absolute_slot;
+                            log::info!("Run_loop update new epoch:{current_epoch:?} current slot:{current_slot:?} next_epoch_start_slot:{next_epoch_start_slot}");
+                        } else {
+                            //RPC epoch hasn't changed retry
+                            spawned_task_toexec.push(futures::future::ready(TaskToExec::RpcGetCurrentEpoch));
                         }
-                        log::info!("Run_loop update new epoch:{current_epoch:?} current slot:{current_slot:?} next_epoch_slot:{current_epoch_end_slot}");
                     }
                     Ok(TaskResult::MergePAList(stake_map)) => {
                         if let Err(err) = merge_stakestore(&mut stakestore, stake_map) {
@@ -260,7 +265,7 @@ async fn run_loop<F: Interceptor>(mut client: GeyserGrpcClient<F>) -> anyhow::Re
                                             //log::trace!("Geyser receive new account");
                                             match account.owner {
                                                 solana_sdk::stake::program::ID => {
-                                                    if let Err(err) = stakestore.add_stake(account, current_epoch_end_slot) {
+                                                    if let Err(err) = stakestore.add_stake(account, next_epoch_start_slot-1) {
                                                         log::warn!("Can't add new stake from account data err:{}", err);
                                                         continue;
                                                     }
@@ -283,7 +288,7 @@ async fn run_loop<F: Interceptor>(mut client: GeyserGrpcClient<F>) -> anyhow::Re
                                         //log::info!("Processing slot: {:?} current slot:{:?}", slot, current_slot);
                                         current_slot.update_slot(&slot);
 
-                                        if current_slot.confirmed_slot >= current_epoch_end_slot { //slot can be non consecutif.
+                                        if current_slot.confirmed_slot >= next_epoch_start_slot { //slot can be non consecutif.
                                             log::info!("End epoch slot. Calculate schedule at current slot:{}", current_slot.confirmed_slot);
                                             let Ok(stake_map) = extract_stakestore(&mut stakestore) else {
                                                 log::info!("Epoch schedule aborted because a getPA is currently running.");
@@ -294,7 +299,7 @@ async fn run_loop<F: Interceptor>(mut client: GeyserGrpcClient<F>) -> anyhow::Re
                                             current_epoch.epoch +=1;
                                             current_epoch.slot_index += current_epoch.slots_in_epoch + 1;
 
-                                            current_epoch_end_slot = current_epoch_end_slot + current_epoch.slots_in_epoch; //set to next epochs.
+                                            next_epoch_start_slot = next_epoch_start_slot + current_epoch.slots_in_epoch; //set to next epochs.
 
                                             log::info!("End slot epoch update calculated next epoch:{current_epoch:?}");
 

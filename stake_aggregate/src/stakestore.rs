@@ -118,6 +118,8 @@ impl StakeStore {
                 last_update_slot: new_account.slot,
                 write_version: new_account.write_version,
             };
+
+            log::trace!("add_stake ststake:{ststake:?}");
             //during extract push the new update or
             //don't add account change that has been done in next epoch.
             let insert_stake = !self.extracted || ststake.last_update_slot > current_end_epoch_slot;

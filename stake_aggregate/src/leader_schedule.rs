@@ -56,7 +56,7 @@ fn calculate_leader_schedule(
         .map(|(pubkey, stake)| (*pubkey, *stake))
         .collect();
     sort_stakes(&mut stakes);
-    log::trace!("calculate_leader_schedule stakes:{stakes:?}");
+    log::trace!("calculate_leader_schedule stakes:{stakes:?} epoch:{current_epoch_info:?}");
     Ok(LeaderSchedule::new(
         &stakes,
         seed,
@@ -159,6 +159,7 @@ pub fn verify_schedule(schedule: LeaderSchedule, rpc_url: String) -> anyhow::Res
     }
 
     log::info!("verify_schedule these account are wrong:{vote_account_in_error:?}");
+    //print_current_program_account(&rpc_client);
     Ok(())
 }
 
@@ -187,4 +188,38 @@ fn save_schedule_on_file(name: &str, map: &HashMap<String, Vec<usize>>) -> anyho
     //log::info!("Files: {file_name}");
     //log::info!("{}", serialized_map);
     Ok(())
+}
+
+use borsh::BorshDeserialize;
+use solana_sdk::stake::state::StakeState;
+fn print_current_program_account(rpc_client: &RpcClient) {
+    let mut stakes = HashMap::<Pubkey, u64>::new();
+    // Fetch stakes in current epoch
+    let response = rpc_client
+        .get_program_accounts(&solana_sdk::stake::program::id())
+        .unwrap();
+
+    //log::trace!("get_program_accounts:{:?}", response);
+
+    for (pubkey, account) in response {
+        // Zero-length accounts owned by the stake program are system accounts that were re-assigned and are to be
+        // ignored
+        if account.data.len() == 0 {
+            continue;
+        }
+
+        match StakeState::deserialize(&mut account.data.as_slice()).unwrap() {
+            StakeState::Stake(_, stake) => {
+                // Add the stake in this stake account to the total for the delegated-to vote account
+                log::info!(
+                    "RPC Stake {pubkey} account:{account:?} stake:{stake:?} details:{stake:?}"
+                );
+                *(stakes
+                    .entry(stake.delegation.voter_pubkey.clone())
+                    .or_insert(0)) += stake.delegation.stake;
+            }
+            _ => (),
+        }
+    }
+    log::info!("RPC Current stakes:{stakes:?}");
 }
