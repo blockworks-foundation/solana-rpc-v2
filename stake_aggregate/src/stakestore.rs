@@ -66,6 +66,10 @@ impl StakeStore {
         }
     }
 
+    pub fn nb_stake_account(&self) -> usize {
+        self.stakes.len()
+    }
+
     //return the contained stake map to do an external update.
     // During extract period (between extract and merge) added stake a stored to be processed later.
     //if the store is already extracted return an error.

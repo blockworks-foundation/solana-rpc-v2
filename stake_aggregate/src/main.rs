@@ -33,14 +33,14 @@ type Slot = u64;
 
 //WebSocket URL: ws://localhost:8900/ (computed)
 
-//const GRPC_URL: &str = "http://127.0.0.0:10000";
+const GRPC_URL: &str = "http://127.0.0.0:10000";
 //const GRPC_URL: &str = "http://192.168.88.31:10000";
-//const RPC_URL: &str = "http://localhost:8899";
+const RPC_URL: &str = "http://localhost:8899";
 //const RPC_URL: &str = "http://192.168.88.31:8899";
 
 //japan server
-const GRPC_URL: &str = "http://147.28.169.13:10000";
-const RPC_URL: &str = "http://147.28.169.13:8899";
+//const GRPC_URL: &str = "http://147.28.169.13:10000";
+//const RPC_URL: &str = "http://147.28.169.13:8899";
 
 //const RPC_URL: &str = "https://api.mainnet-beta.solana.com";
 //const RPC_URL: &str = "https://api.testnet.solana.com";
@@ -84,7 +84,7 @@ async fn run_loop<F: Interceptor>(mut client: GeyserGrpcClient<F>) -> anyhow::Re
         // Fetch current epoch
         rpc_client.get_epoch_info().await?
     };
-    log::trace!("Run_loop init current_epoch:{current_epoch:?}");
+    log::info!("Run_loop init current_epoch:{current_epoch:?}");
 
     let mut spawned_task_toexec = FuturesUnordered::new();
     let mut spawned_task_result = FuturesUnordered::new();
@@ -123,10 +123,19 @@ async fn run_loop<F: Interceptor>(mut client: GeyserGrpcClient<F>) -> anyhow::Re
         )
         .await?;
 
+    //log current data at interval
+    let mut log_interval = tokio::time::interval(Duration::from_millis(1000));
+
     loop {
         tokio::select! {
+            //log interval
+            _ = log_interval.tick() => {
+                log::info!("Run_loop update new epoch:{current_epoch:?} current slot:{current_slot:?}");
+                log::info!("Change epoch equality {} == {}", current_slot.confirmed_slot, current_epoch.absolute_slot + current_epoch.slots_in_epoch);
+                log::info!("number of stake accounts:{}", stakestore.nb_stake_account());
+            }
             //Execute RPC call in another task
-           Some(to_exec) = spawned_task_toexec.next() =>  {
+            Some(to_exec) = spawned_task_toexec.next() =>  {
                 let jh = tokio::spawn(async move {
                     match to_exec {
                         TaskToExec::RpcGetPa => {
@@ -138,7 +147,7 @@ async fn run_loop<F: Interceptor>(mut client: GeyserGrpcClient<F>) -> anyhow::Re
                             TaskResult::RpcGetPa(res)
                         },
                         TaskToExec::RpcGetCurrentEpoch => {
-                            log::trace!("TaskToExec RpcGetCurrentEpoch start");
+                            log::info!("TaskToExec RpcGetCurrentEpoch start");
                             let rpc_client = RpcClient::new_with_commitment(RPC_URL.to_string(), CommitmentConfig::finalized());
                             let res = rpc_client.get_epoch_info().await;
                             TaskResult::CurrentEpoch(res)
@@ -172,7 +181,7 @@ async fn run_loop<F: Interceptor>(mut client: GeyserGrpcClient<F>) -> anyhow::Re
                         spawned_task_toexec.push(futures::future::ready(TaskToExec::RpcGetPa));
                     }
                     Ok(TaskResult::CurrentEpoch(Ok(epoch_info))) => {
-                        log::trace!("Run_loop update new epoch:{epoch_info:?}");
+                        log::info!("Run_loop update new epoch:{epoch_info:?} current slot:{current_slot:?}");
                         current_epoch = epoch_info;
                     }
                     Ok(TaskResult::MergePAList(stake_map)) => {
@@ -263,7 +272,7 @@ async fn run_loop<F: Interceptor>(mut client: GeyserGrpcClient<F>) -> anyhow::Re
                                     }
                                     Some(UpdateOneof::Slot(slot)) => {
                                         //update current slot
-                                        //log::info!("Processing slot: {:?} current slot:{:?}", slot, current_slot);
+                                        log::info!("Processing slot: {:?} current slot:{:?}", slot, current_slot);
                                         current_slot.update_slot(&slot);
 
                                         if current_slot.confirmed_slot == current_epoch.absolute_slot + current_epoch.slots_in_epoch {
