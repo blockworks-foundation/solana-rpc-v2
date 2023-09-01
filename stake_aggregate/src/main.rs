@@ -33,14 +33,8 @@ type Slot = u64;
 
 //WebSocket URL: ws://localhost:8900/ (computed)
 
-//const GRPC_URL: &str = "http://127.0.0.0:10000";
-const GRPC_URL: &str = "http://192.168.88.31:10000";
-//const RPC_URL: &str = "http://localhost:8899";
-const RPC_URL: &str = "http://192.168.88.31:8899";
-
-//japan server
-//const GRPC_URL: &str = "http://147.28.169.13:10000";
-//const RPC_URL: &str = "http://147.28.169.13:8899";
+const GRPC_URL: &str = "http://localhost:10000";
+const RPC_URL: &str = "http://localhost:8899";
 
 //const RPC_URL: &str = "https://api.mainnet-beta.solana.com";
 //const RPC_URL: &str = "https://api.testnet.solana.com";
@@ -126,7 +120,7 @@ async fn run_loop<F: Interceptor>(mut client: GeyserGrpcClient<F>) -> anyhow::Re
         .await?;
 
     //log current data at interval
-    let mut log_interval = tokio::time::interval(Duration::from_millis(60000));
+    let mut log_interval = tokio::time::interval(Duration::from_millis(600000));
 
     loop {
         tokio::select! {
@@ -210,18 +204,18 @@ async fn run_loop<F: Interceptor>(mut client: GeyserGrpcClient<F>) -> anyhow::Re
 
                         //TODO REMOVE
                         //To test verify the schedule
-                        let Ok(stake_map) = extract_stakestore(&mut stakestore) else {
-                            log::info!("Epoch schedule aborted because a getPA is currently running.");
-                            continue;
-                        };
-                        let jh = tokio::task::spawn_blocking({
-                            let move_epoch = current_epoch.clone();
-                            move || {
-                                let schedule = crate::leader_schedule::calculate_leader_schedule_from_stake_map(&stake_map, &move_epoch);
-                                TaskResult::ScheduleResult(schedule.ok(), stake_map)
-                            }
-                        });
-                        spawned_task_result.push(jh);
+                        // let Ok(stake_map) = extract_stakestore(&mut stakestore) else {
+                        //     log::info!("Epoch schedule aborted because a getPA is currently running.");
+                        //     continue;
+                        // };
+                        // let jh = tokio::task::spawn_blocking({
+                        //     let move_epoch = current_epoch.clone();
+                        //     move || {
+                        //         let schedule = crate::leader_schedule::calculate_leader_schedule_from_stake_map(&stake_map, &move_epoch);
+                        //         TaskResult::ScheduleResult(schedule.ok(), stake_map)
+                        //     }
+                        // });
+                        // spawned_task_result.push(jh);
                         //end test
 
                     }
@@ -306,10 +300,13 @@ async fn run_loop<F: Interceptor>(mut client: GeyserGrpcClient<F>) -> anyhow::Re
 
 
                                             //calculate schedule in a dedicated thread.
-                                            let move_epoch = current_epoch.clone();
-                                            let jh = tokio::task::spawn_blocking(move || {
-                                                let schedule = crate::leader_schedule::calculate_leader_schedule_from_stake_map(&stake_map, &move_epoch);
-                                                TaskResult::ScheduleResult(schedule.ok(), stake_map)
+
+                                            let jh = tokio::task::spawn_blocking({
+                                                let move_epoch = current_epoch.clone();
+                                                move || {
+                                                    let schedule = crate::leader_schedule::calculate_leader_schedule_from_stake_map(&stake_map, &move_epoch);
+                                                    TaskResult::ScheduleResult(schedule.ok(), stake_map)
+                                                }
                                             });
                                             spawned_task_result.push(jh);
 
@@ -371,7 +368,7 @@ impl CurrentSlot {
         let updade = |commitment: &str, current_slot: &mut u64, new_slot: u64| {
             //verify that the slot is consecutif
             if *current_slot != 0 && new_slot != *current_slot + 1 {
-                log::warn!(
+                log::trace!(
                     "At {commitment} not consecutif slot send: current_slot:{} new_slot{}",
                     current_slot,
                     new_slot
