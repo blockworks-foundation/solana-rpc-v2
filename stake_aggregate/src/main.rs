@@ -315,7 +315,7 @@ async fn run_loop<F: Interceptor>(mut client: GeyserGrpcClient<F>) -> anyhow::Re
 
                                         }
                                     }
-                                    Some(UpdateOneof::Ping(_)) => log::info!("UpdateOneof::Ping"),
+                                    Some(UpdateOneof::Ping(_)) => log::trace!("UpdateOneof::Ping"),
                                     bad_msg => {
                                         log::info!("Geyser stream unexpected message received:{:?}",bad_msg);
                                     }
