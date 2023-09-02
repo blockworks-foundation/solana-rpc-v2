@@ -124,6 +124,7 @@ async fn run_loop<F: Interceptor>(mut client: GeyserGrpcClient<F>) -> anyhow::Re
             account_include: Default::default(),
             include_transactions: Some(true),
             include_accounts: Some(false),
+            include_entries: None,
         },
     );
 
