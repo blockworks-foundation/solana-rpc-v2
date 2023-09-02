@@ -30,13 +30,13 @@ fn stake_map_insert_stake(map: &mut StakeMap, stake_account: Pubkey, stake: Stor
         std::collections::hash_map::Entry::Occupied(occupied) => {
             let strstake = occupied.into_mut(); // <-- get mut reference to existing value
             if strstake.last_update_slot < stake.last_update_slot {
-                log::trace!("Stake updated for: {stake_account} stake:{stake:?}");
+                log::info!("Stake updated for: {stake_account} stake:{stake:?}");
                 *strstake = stake;
             }
         }
         // If value doesn't exist yet, then insert a new value of 1
         std::collections::hash_map::Entry::Vacant(vacant) => {
-            log::trace!("New stake added for: {stake_account} stake:{stake:?}");
+            log::info!("New stake added for: {stake_account} stake:{stake:?}");
             vacant.insert(stake);
         }
     };
@@ -118,8 +118,6 @@ impl StakeStore {
                 last_update_slot: new_account.slot,
                 write_version: new_account.write_version,
             };
-
-            log::trace!("add_stake ststake:{ststake:?}");
             //during extract push the new update or
             //don't add account change that has been done in next epoch.
             let insert_stake = !self.extracted || ststake.last_update_slot > current_end_epoch_slot;

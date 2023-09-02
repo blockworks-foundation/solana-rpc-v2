@@ -56,7 +56,7 @@ fn calculate_leader_schedule(
         .map(|(pubkey, stake)| (*pubkey, *stake))
         .collect();
     sort_stakes(&mut stakes);
-    log::trace!("calculate_leader_schedule stakes:{stakes:?} epoch:{current_epoch_info:?}");
+    log::info!("calculate_leader_schedule stakes:{stakes:?} epoch:{current_epoch_info:?}");
     Ok(LeaderSchedule::new(
         &stakes,
         seed,
