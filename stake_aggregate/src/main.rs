@@ -261,6 +261,8 @@ async fn run_loop<F: Interceptor>(mut client: GeyserGrpcClient<F>) -> anyhow::Re
                         //verify calculated shedule with the one the RPC return.
                         if let Some(schedule) = schedule_opt {
                             tokio::task::spawn_blocking(|| {
+                                //10 second that the schedule has been calculated on the validator
+                                std::thread::sleep(std::time::Duration::from_secs(10));
                                 if let Err(err) = crate::leader_schedule::verify_schedule(schedule,RPC_URL.to_string()) {
                                     log::warn!("Error during schedule verification:{err}");
                                 }
@@ -462,7 +464,7 @@ fn read_account(
         };
 
     if geyser_account.slot != current_slot {
-        log::warn!(
+        log::trace!(
             "Get geyser account on a different slot:{} of the current:{current_slot}",
             geyser_account.slot
         );
