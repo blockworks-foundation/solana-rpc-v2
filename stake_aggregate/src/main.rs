@@ -1,4 +1,15 @@
-//RUST_BACKTRACE=1 RUST_LOG=stake_aggregate=trace cargo run
+//RUST_BACKTRACE=1 RUST_LOG=stake_aggregate=trace cargo run --release
+/*
+ RPC calls;
+ curl http://localhost:3000 -X POST -H "Content-Type: application/json" -d '
+  {
+    "jsonrpc": "2.0",
+    "id" : 1,
+    "method": "save_stakes",
+    "params": []
+  }
+'
+*/
 use crate::stakestore::extract_stakestore;
 use crate::stakestore::merge_stakestore;
 use crate::stakestore::StakeStore;
@@ -44,9 +55,17 @@ const RPC_URL: &str = "http://localhost:8899";
 
 const STAKESTORE_INITIAL_CAPACITY: usize = 600000;
 
-pub fn log_end_epoch(current_slot: Slot, end_epoch_slot: Slot, msg: String) {
+pub fn log_end_epoch(
+    current_slot: Slot,
+    end_epoch_slot: Slot,
+    epoch_slot_index: Slot,
+    msg: String,
+) {
     //log 50 end slot.
-    if current_slot != 0 && current_slot + 50 > end_epoch_slot {
+    if current_slot != 0 && current_slot + 20 > end_epoch_slot {
+        log::info!("{current_slot}/{end_epoch_slot} {}", msg);
+    }
+    if epoch_slot_index < 20 {
         log::info!("{current_slot}/{end_epoch_slot} {}", msg);
     }
 }
@@ -160,13 +179,16 @@ async fn run_loop<F: Interceptor>(mut client: GeyserGrpcClient<F>) -> anyhow::Re
         tokio::select! {
             _ = request_rx.recv() => {
                 tokio::task::spawn_blocking({
+                    log::info!("RPC start save_stakes");
                     let current_stakes = stakestore.get_cloned_stake_map();
                     let move_epoch = current_epoch.clone();
                     move || {
                         let current_stake = crate::leader_schedule::build_current_stakes(&current_stakes, &move_epoch, RPC_URL.to_string(), CommitmentConfig::confirmed());
+                        log::info!("RPC save_stakes generation done");
                         if let Err(err) = crate::leader_schedule::save_schedule_on_file("stakes", &current_stake) {
                             log::error!("Error during current stakes saving:{err}");
                         }
+                        log::info!("RPC save_stakes END");
 
                     }
                 });
@@ -231,6 +253,13 @@ async fn run_loop<F: Interceptor>(mut client: GeyserGrpcClient<F>) -> anyhow::Re
                         //only update new epoch slot if the RPC call return the next epoch. Some time it still return the current epoch.
                         if current_epoch.epoch <= epoch_info.epoch {
                             current_epoch = epoch_info;
+                            //calcualte slotindex with current slot. getEpichInfo doesn't return data  on current slot.
+                            if current_slot.confirmed_slot > current_epoch.absolute_slot {
+                                let diff =  current_slot.confirmed_slot - current_epoch.absolute_slot;
+                                current_epoch.absolute_slot += diff;
+                                current_epoch.slot_index += diff;
+                                log::trace!("Update current epoch, diff:{diff}");
+                            }
                             next_epoch_start_slot = current_epoch.slots_in_epoch - current_epoch.slot_index + current_epoch.absolute_slot;
                             log::info!("Run_loop update new epoch:{current_epoch:?} current slot:{current_slot:?} next_epoch_start_slot:{next_epoch_start_slot}");
                         } else {
@@ -281,10 +310,12 @@ async fn run_loop<F: Interceptor>(mut client: GeyserGrpcClient<F>) -> anyhow::Re
                         if let Some(schedule) = schedule_opt {
                             tokio::task::spawn_blocking(|| {
                                 //10 second that the schedule has been calculated on the validator
-                                std::thread::sleep(std::time::Duration::from_secs(10));
+                                std::thread::sleep(std::time::Duration::from_secs(60));
+                                log::info!("Start Verify schedule");
                                 if let Err(err) = crate::leader_schedule::verify_schedule(schedule,RPC_URL.to_string()) {
                                     log::warn!("Error during schedule verification:{err}");
                                 }
+                                log::info!("End Verify schedule");
                             });
                         }
                     }
@@ -327,9 +358,30 @@ async fn run_loop<F: Interceptor>(mut client: GeyserGrpcClient<F>) -> anyhow::Re
                                         }
                                     }
                                     Some(UpdateOneof::Slot(slot)) => {
+                                        //for the first update of slot correct epoch info data.
+                                        if let CommitmentLevel::Confirmed = slot.status(){
+                                            if current_slot.confirmed_slot == 0 {
+                                                let diff =  slot.slot - current_epoch.absolute_slot;
+                                                current_epoch.absolute_slot += diff;
+                                                current_epoch.slot_index += diff;
+                                                log::trace!("Set current epoch with diff:{diff} slot:{} current:{}", slot.slot, current_epoch.absolute_slot);
+                                            }
+                                        }
+
+
                                         //update current slot
                                         //log::info!("Processing slot: {:?} current slot:{:?}", slot, current_slot);
-                                        log_end_epoch(current_slot.confirmed_slot, next_epoch_start_slot, format!("Receive slot: {:?} at commitment:{:?}", slot.slot, slot.status()));
+                                        log_end_epoch(current_slot.confirmed_slot, next_epoch_start_slot, current_epoch.slot_index, format!("Receive slot: {:?} at commitment:{:?}", slot.slot, slot.status()));
+
+                                        //update epoch info
+                                        if let CommitmentLevel::Confirmed = slot.status(){
+                                            if current_slot.confirmed_slot != 0 && slot.slot > current_slot.confirmed_slot {
+                                                let diff =  slot.slot - current_slot.confirmed_slot;
+                                                current_epoch.slot_index += diff;
+                                                current_epoch.absolute_slot += diff;
+                                                log::trace!("Update epoch with slot, diff:{diff}");
+                                            }
+                                        }
 
                                         current_slot.update_slot(&slot);
 
@@ -342,13 +394,10 @@ async fn run_loop<F: Interceptor>(mut client: GeyserGrpcClient<F>) -> anyhow::Re
 
                                             //change epoch. Change manually then update using RPC.
                                             current_epoch.epoch +=1;
-                                            current_epoch.slot_index += current_epoch.slots_in_epoch + 1;
-
+                                            current_epoch.slot_index = 1;
                                             next_epoch_start_slot = next_epoch_start_slot + current_epoch.slots_in_epoch; //set to next epochs.
 
                                             log::info!("End slot epoch update calculated next epoch:{current_epoch:?}");
-
-
 
                                             //calculate schedule in a dedicated thread.
 

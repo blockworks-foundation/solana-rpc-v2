@@ -6,6 +6,7 @@ use solana_sdk::commitment_config::CommitmentConfig;
 use solana_sdk::epoch_info::EpochInfo;
 use solana_sdk::pubkey::Pubkey;
 use solana_sdk::stake::state::Delegation;
+use std::collections::BTreeSet;
 use std::collections::HashMap;
 use std::str::FromStr;
 use std::time::Duration;
@@ -128,9 +129,9 @@ pub fn verify_schedule(schedule: LeaderSchedule, rpc_url: String) -> anyhow::Res
             .push(slot);
     }
 
-    if let Err(err) = save_schedule_on_file("generated", &input_leader_schedule) {
-        log::error!("Error during saving generated schedule:{err}");
-    }
+    // if let Err(err) = save_schedule_on_file("generated", &input_leader_schedule) {
+    //     log::error!("Error during saving generated schedule:{err}");
+    // }
 
     //map rpc leader schedule node pubkey to vote account
     let mut rpc_leader_schedule: HashMap<String, Vec<usize>> = rpc_leader_schedule.into_iter().filter_map(|(pk, slots)| match node_vote_table.get(&pk) {
@@ -141,17 +142,17 @@ pub fn verify_schedule(schedule: LeaderSchedule, rpc_url: String) -> anyhow::Res
             },
         }).collect();
 
-    if let Err(err) = save_schedule_on_file("rpc", &rpc_leader_schedule) {
-        log::error!("Error during saving generated schedule:{err}");
-    } //log::trace!("verify_schedule calculated_leader_schedule:{input_leader_schedule:?} RPC leader schedule:{rpc_leader_schedule:?}");
+    // if let Err(err) = save_schedule_on_file("rpc", &rpc_leader_schedule) {
+    //     log::error!("Error during saving generated schedule:{err}");
+    // } //log::trace!("verify_schedule calculated_leader_schedule:{input_leader_schedule:?} RPC leader schedule:{rpc_leader_schedule:?}");
 
     let mut vote_account_in_error: Vec<String> = input_leader_schedule
         .into_iter()
         .filter_map(|(input_vote_key, mut input_slot_list)| {
             let Some(mut rpc_strake_list) = rpc_leader_schedule.remove(&input_vote_key) else {
-            log::warn!("verify_schedule vote account not found in RPC:{input_vote_key}");
-            return Some(input_vote_key);
-        };
+                log::trace!("verify_schedule vote account not found in RPC:{input_vote_key}");
+                return Some(input_vote_key);
+            };
             input_slot_list.sort();
             rpc_strake_list.sort();
             if input_slot_list
@@ -159,7 +160,7 @@ pub fn verify_schedule(schedule: LeaderSchedule, rpc_url: String) -> anyhow::Res
                 .zip(rpc_strake_list.into_iter())
                 .any(|(in_v, rpc)| in_v != rpc)
             {
-                log::warn!("verify_schedule bad slots for {input_vote_key}"); // Caluclated:{input_slot_list:?} rpc:{rpc_strake_list:?}
+                log::trace!("verify_schedule bad slots for {input_vote_key}"); // Caluclated:{input_slot_list:?} rpc:{rpc_strake_list:?}
                 Some(input_vote_key)
             } else {
                 None
@@ -168,7 +169,7 @@ pub fn verify_schedule(schedule: LeaderSchedule, rpc_url: String) -> anyhow::Res
         .collect();
 
     if !rpc_leader_schedule.is_empty() {
-        log::warn!(
+        log::trace!(
             "verify_schedule RPC vote account not present in calculated schedule:{:?}",
             rpc_leader_schedule.keys()
         );
@@ -239,9 +240,7 @@ pub fn build_current_stakes(
             StakeState::Stake(_, stake) => {
                 if is_stake_to_add(pubkey, &stake.delegation, current_epoch_info) {
                     // Add the stake in this stake account to the total for the delegated-to vote account
-                    log::info!(
-                        "RPC Stake {pubkey} account:{account:?} stake:{stake:?} details:{stake:?}"
-                    );
+                    log::trace!("RPC Stake {pubkey} account:{account:?} stake:{stake:?}");
                     (stakes_aggregated
                         .entry(stake.delegation.voter_pubkey.to_string())
                         .or_insert((0, 0)))
@@ -251,11 +250,28 @@ pub fn build_current_stakes(
             _ => (),
         }
     }
-    stake_map.iter().for_each(|(_, stake)| {
+    stake_map.iter().for_each(|(pubkey, stake)| {
+        log::trace!(
+            "LCOAL Stake {pubkey} account:{:?} stake:{stake:?}",
+            stake.stake.voter_pubkey
+        );
         (stakes_aggregated
             .entry(stake.stake.voter_pubkey.to_string())
             .or_insert((0, 0)))
-        .0 += stake.stake.stake;
+        .1 += stake.stake.stake;
     });
+
+    //verify the list
+    let diff_list: HashMap<String, (u64, u64)> = stakes_aggregated
+        .iter()
+        .filter(|(_, (rpc, local))| rpc != local)
+        .map(|(pk, vals)| (pk.clone(), vals.clone()))
+        .collect();
+    if diff_list.len() > 0 {
+        log::warn!(
+            "Aggregated stakes list differs for vote accounts:{:?}",
+            diff_list
+        );
+    }
     stakes_aggregated
 }
