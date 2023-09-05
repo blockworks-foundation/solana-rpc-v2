@@ -19,6 +19,10 @@ tokio = { version = "1.*", features = ["full"] }
 reqwest = "0.11"
 serde = "1.0"
 serde_json = "1.0"
+jsonrpsee = { version = "0.20.0", features = [] }
+jsonrpsee-core = "0.20.0"
+jsonrpsee-server = "0.20.0"
+thiserror = "1.0.40"
 
 yellowstone-grpc-client = { path = "../../yellowstone-grpc/yellowstone-grpc-client" }
 yellowstone-grpc-proto = { path = "../../yellowstone-grpc/yellowstone-grpc-proto" }

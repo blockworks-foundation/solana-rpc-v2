@@ -5,8 +5,10 @@ use solana_sdk::clock::NUM_CONSECUTIVE_LEADER_SLOTS;
 use solana_sdk::commitment_config::CommitmentConfig;
 use solana_sdk::epoch_info::EpochInfo;
 use solana_sdk::pubkey::Pubkey;
+use solana_sdk::stake::state::Delegation;
 use std::collections::HashMap;
 use std::str::FromStr;
+use std::time::Duration;
 
 const MAX_EPOCH_VALUE: u64 = 18446744073709551615;
 
@@ -18,26 +20,38 @@ pub fn calculate_leader_schedule_from_stake_map(
     //log::trace!("calculate_leader_schedule_from_stake_map stake_map:{stake_map:?} current_epoch_info:{current_epoch_info:?}");
     for storestake in stake_map.values() {
         //log::info!("Program_accounts stake:{stake:#?}");
-        //On test validator all stakes are attributes to an account with stake.delegation.activation_epoch == MAX_EPOCH_VALUE.
-        //It's considered as activated stake.
-        if storestake.stake.activation_epoch == MAX_EPOCH_VALUE {
-            log::info!("Found account with stake.delegation.activation_epoch == MAX_EPOCH_VALUE use it: {}", storestake.pubkey.to_string());
-        } else {
-            // Ignore stake accounts activated in this epoch (or later, to include activation_epoch of
-            // u64::MAX which indicates no activation ever happened)
-            if storestake.stake.activation_epoch >= current_epoch_info.epoch {
-                continue;
-            }
-            // Ignore stake accounts deactivated before this epoch
-            if storestake.stake.deactivation_epoch < current_epoch_info.epoch {
-                continue;
-            }
+        if is_stake_to_add(storestake.pubkey, &storestake.stake, &current_epoch_info) {
+            // Add the stake in this stake account to the total for the delegated-to vote account
+            *(stakes.entry(storestake.stake.voter_pubkey).or_insert(0)) += storestake.stake.stake;
         }
-
-        // Add the stake in this stake account to the total for the delegated-to vote account
-        *(stakes.entry(storestake.stake.voter_pubkey).or_insert(0)) += storestake.stake.stake;
     }
     calculate_leader_schedule(stakes, current_epoch_info)
+}
+
+fn is_stake_to_add(
+    stake_pubkey: Pubkey,
+    stake: &Delegation,
+    current_epoch_info: &EpochInfo,
+) -> bool {
+    //On test validator all stakes are attributes to an account with stake.delegation.activation_epoch == MAX_EPOCH_VALUE.
+    //It's considered as activated stake.
+    if stake.activation_epoch == MAX_EPOCH_VALUE {
+        log::info!(
+            "Found account with stake.delegation.activation_epoch == MAX_EPOCH_VALUE use it: {}",
+            stake_pubkey.to_string()
+        );
+    } else {
+        // Ignore stake accounts activated in this epoch (or later, to include activation_epoch of
+        // u64::MAX which indicates no activation ever happened)
+        if stake.activation_epoch >= current_epoch_info.epoch {
+            return false;
+        }
+        // Ignore stake accounts deactivated before this epoch
+        if stake.deactivation_epoch < current_epoch_info.epoch {
+            return false;
+        }
+    }
+    true
 }
 
 //Copied from leader_schedule_utils.rs
@@ -83,7 +97,11 @@ fn sort_stakes(stakes: &mut Vec<(Pubkey, u64)>) {
 }
 
 pub fn verify_schedule(schedule: LeaderSchedule, rpc_url: String) -> anyhow::Result<()> {
-    let rpc_client = RpcClient::new_with_commitment(rpc_url, CommitmentConfig::confirmed());
+    let rpc_client = RpcClient::new_with_timeout_and_commitment(
+        rpc_url,
+        Duration::from_secs(600),
+        CommitmentConfig::confirmed(),
+    );
     let Some(rpc_leader_schedule) = rpc_client.get_leader_schedule(None)? else {
         log::info!("verify_schedule RPC return no schedule. Try later.");
         return Ok(());
@@ -167,7 +185,10 @@ use std::fs::File;
 use std::io::Write;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-fn save_schedule_on_file(name: &str, map: &HashMap<String, Vec<usize>>) -> anyhow::Result<()> {
+pub fn save_schedule_on_file<T: serde::Serialize>(
+    name: &str,
+    map: &HashMap<String, T>,
+) -> anyhow::Result<()> {
     let serialized_map = serde_json::to_string(map).unwrap();
 
     let start = SystemTime::now();
@@ -192,15 +213,21 @@ fn save_schedule_on_file(name: &str, map: &HashMap<String, Vec<usize>>) -> anyho
 
 use borsh::BorshDeserialize;
 use solana_sdk::stake::state::StakeState;
-fn print_current_program_account(rpc_client: &RpcClient) {
-    let mut stakes = HashMap::<Pubkey, u64>::new();
+pub fn build_current_stakes(
+    stake_map: &crate::stakestore::StakeMap,
+    current_epoch_info: &EpochInfo,
+    rpc_url: String,
+    commitment: CommitmentConfig,
+) -> HashMap<String, (u64, u64)> {
     // Fetch stakes in current epoch
+    let rpc_client =
+        RpcClient::new_with_timeout_and_commitment(rpc_url, Duration::from_secs(600), commitment); //CommitmentConfig::confirmed());
     let response = rpc_client
         .get_program_accounts(&solana_sdk::stake::program::id())
         .unwrap();
 
     //log::trace!("get_program_accounts:{:?}", response);
-
+    let mut stakes_aggregated = HashMap::<String, (u64, u64)>::new();
     for (pubkey, account) in response {
         // Zero-length accounts owned by the stake program are system accounts that were re-assigned and are to be
         // ignored
@@ -210,16 +237,25 @@ fn print_current_program_account(rpc_client: &RpcClient) {
 
         match StakeState::deserialize(&mut account.data.as_slice()).unwrap() {
             StakeState::Stake(_, stake) => {
-                // Add the stake in this stake account to the total for the delegated-to vote account
-                log::info!(
-                    "RPC Stake {pubkey} account:{account:?} stake:{stake:?} details:{stake:?}"
-                );
-                *(stakes
-                    .entry(stake.delegation.voter_pubkey.clone())
-                    .or_insert(0)) += stake.delegation.stake;
+                if is_stake_to_add(pubkey, &stake.delegation, current_epoch_info) {
+                    // Add the stake in this stake account to the total for the delegated-to vote account
+                    log::info!(
+                        "RPC Stake {pubkey} account:{account:?} stake:{stake:?} details:{stake:?}"
+                    );
+                    (stakes_aggregated
+                        .entry(stake.delegation.voter_pubkey.to_string())
+                        .or_insert((0, 0)))
+                    .0 += stake.delegation.stake;
+                }
             }
             _ => (),
         }
     }
-    log::info!("RPC Current stakes:{stakes:?}");
+    stake_map.iter().for_each(|(_, stake)| {
+        (stakes_aggregated
+            .entry(stake.stake.voter_pubkey.to_string())
+            .or_insert((0, 0)))
+        .0 += stake.stake.stake;
+    });
+    stakes_aggregated
 }

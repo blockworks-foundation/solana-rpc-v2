@@ -1,4 +1,4 @@
-//cargo run 10 23 15
+//cargo run 1 10 23 15 for 1d 10h 23mn 15s
 
 use borsh::BorshDeserialize;
 use chrono::{Datelike, Local, NaiveDate, NaiveTime, Timelike};
@@ -36,20 +36,23 @@ pub async fn main() -> anyhow::Result<()> {
         std::process::exit(1);
     }
 
-    let target_hour: u32 = args[1]
+    let day: u64 = args[1]
         .parse()
         .expect("First argument should be a number representing the hour");
-    let target_minute: u32 = args[2]
+    let hour: u64 = args[2]
+        .parse()
+        .expect("First argument should be a number representing the hour");
+    let minute: u64 = args[3]
         .parse()
         .expect("Second argument should be a number representing the minute");
-    let target_second: u32 = args[3]
+    let second: u64 = args[4]
         .parse()
         .expect("Third argument should be a number representing the seconds");
 
-    let seconds_until_target = seconds_until_target_time(target_hour, target_minute, target_second);
+    let seconds_until_target = day * 24 * 3600 + hour * 3600 + minute * 60 + second;
     log::info!("seconds_until_target:{}", seconds_until_target);
-    let to_wait = Duration::from_secs((seconds_until_target as u64).saturating_sub(30));
-    //tokio::time::sleep(to_wait).await;
+    let to_wait = Duration::from_secs(seconds_until_target as u64);
+    tokio::time::sleep(to_wait).await;
 
     let mut counter = 0;
     let mut schedule_counter = 0;
@@ -82,10 +85,10 @@ pub async fn main() -> anyhow::Result<()> {
 async fn save_map(file_name: &str, map: &BTreeMap<String, (u64, u64, u64)>) -> anyhow::Result<()> {
     let serialized_map = serde_json::to_string(map).unwrap();
     // Write to the file
-    //let mut file = File::create(file_name).await?;
-    //file.write_all(serialized_map.as_bytes()).await?;
-    log::info!("Files: {file_name}");
-    log::info!("{}", serialized_map);
+    let mut file = File::create(file_name).await?;
+    file.write_all(serialized_map.as_bytes()).await?;
+    //log::info!("Files: {file_name}");
+    //log::info!("{}", serialized_map);
     Ok(())
 }
 
@@ -364,26 +367,6 @@ fn seconds_until_target_time_with_time(
 
     let duration_until_target = target_time - now;
     duration_until_target.whole_seconds()
-}
-
-fn seconds_until_target_time(target_hour: u32, target_minute: u32, target_second: u32) -> u64 {
-    let now = Local::now();
-    log::info!("now:{now:?}");
-    let today = now.date_naive();
-    let target_naive_time =
-        NaiveTime::from_hms_opt(target_hour, target_minute, target_second).unwrap();
-    let mut target_time = NaiveDate::and_time(&today, target_naive_time);
-
-    // If the target time has passed for today, calculate for next day
-    if target_time < now.naive_local() {
-        target_time = NaiveDate::and_time(&(today + chrono::Duration::days(1)), target_naive_time);
-    }
-
-    log::info!("target_time:{target_time:?}");
-    let duration_until_target = target_time
-        .signed_duration_since(now.naive_local())
-        .num_seconds() as u64;
-    duration_until_target
 }
 
 pub async fn verify_schedule(

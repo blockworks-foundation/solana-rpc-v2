@@ -28,7 +28,7 @@ use yellowstone_grpc_proto::{
 };
 
 mod leader_schedule;
-//mod rpc;
+mod rpc;
 mod stakestore;
 
 type Slot = u64;
@@ -150,8 +150,27 @@ async fn run_loop<F: Interceptor>(mut client: GeyserGrpcClient<F>) -> anyhow::Re
     //log current data at interval
     let mut log_interval = tokio::time::interval(Duration::from_millis(600000));
 
+    //start local rpc access to execute command.
+    let (request_tx, mut request_rx) = tokio::sync::mpsc::channel(100);
+    let rpc_handle = crate::rpc::run_server(request_tx).await?;
+    //make it run forever
+    tokio::spawn(rpc_handle.stopped());
+
     loop {
         tokio::select! {
+            _ = request_rx.recv() => {
+                tokio::task::spawn_blocking({
+                    let current_stakes = stakestore.get_cloned_stake_map();
+                    let move_epoch = current_epoch.clone();
+                    move || {
+                        let current_stake = crate::leader_schedule::build_current_stakes(&current_stakes, &move_epoch, RPC_URL.to_string(), CommitmentConfig::confirmed());
+                        if let Err(err) = crate::leader_schedule::save_schedule_on_file("stakes", &current_stake) {
+                            log::error!("Error during current stakes saving:{err}");
+                        }
+
+                    }
+                });
+            },
             //log interval
             _ = log_interval.tick() => {
                 log::info!("Run_loop update new epoch:{current_epoch:?} current slot:{current_slot:?} next epoch start slot:{next_epoch_start_slot}");
@@ -175,7 +194,7 @@ async fn run_loop<F: Interceptor>(mut client: GeyserGrpcClient<F>) -> anyhow::Re
                             log::info!("TaskToExec RpcGetCurrentEpoch start");
                             //wait 1 sec to be sure RPC change epoch
                             tokio::time::sleep(Duration::from_secs(1)).await;
-                            let rpc_client = RpcClient::new_with_commitment(RPC_URL.to_string(), CommitmentConfig::finalized());
+                            let rpc_client = RpcClient::new_with_timeout_and_commitment(RPC_URL.to_string(), Duration::from_secs(600), CommitmentConfig::finalized());
                             let res = rpc_client.get_epoch_info().await;
                             TaskResult::CurrentEpoch(res)
                         }

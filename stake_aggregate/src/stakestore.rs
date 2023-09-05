@@ -42,7 +42,7 @@ fn stake_map_insert_stake(map: &mut StakeMap, stake_account: Pubkey, stake: Stor
     };
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct StoredStake {
     pub pubkey: Pubkey,
     pub stake: Delegation,
@@ -68,6 +68,10 @@ impl StakeStore {
 
     pub fn nb_stake_account(&self) -> usize {
         self.stakes.len()
+    }
+
+    pub fn get_cloned_stake_map(&self) -> StakeMap {
+        self.stakes.clone()
     }
 
     //return the contained stake map to do an external update.
