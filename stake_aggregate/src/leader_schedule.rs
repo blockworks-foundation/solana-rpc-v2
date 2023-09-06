@@ -6,9 +6,8 @@ use solana_sdk::commitment_config::CommitmentConfig;
 use solana_sdk::epoch_info::EpochInfo;
 use solana_sdk::pubkey::Pubkey;
 use solana_sdk::stake::state::Delegation;
-use std::collections::BTreeSet;
+use std::collections::BTreeMap;
 use std::collections::HashMap;
-use std::str::FromStr;
 use std::time::Duration;
 
 const MAX_EPOCH_VALUE: u64 = 18446744073709551615;
@@ -188,7 +187,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 pub fn save_schedule_on_file<T: serde::Serialize>(
     name: &str,
-    map: &HashMap<String, T>,
+    map: &BTreeMap<String, T>,
 ) -> anyhow::Result<()> {
     let serialized_map = serde_json::to_string(map).unwrap();
 
@@ -219,7 +218,7 @@ pub fn build_current_stakes(
     current_epoch_info: &EpochInfo,
     rpc_url: String,
     commitment: CommitmentConfig,
-) -> HashMap<String, (u64, u64)> {
+) -> BTreeMap<String, (u64, u64)> {
     // Fetch stakes in current epoch
     let rpc_client =
         RpcClient::new_with_timeout_and_commitment(rpc_url, Duration::from_secs(600), commitment); //CommitmentConfig::confirmed());
@@ -228,7 +227,8 @@ pub fn build_current_stakes(
         .unwrap();
 
     //log::trace!("get_program_accounts:{:?}", response);
-    let mut stakes_aggregated = HashMap::<String, (u64, u64)>::new();
+    //use btreemap to always sort the same way.
+    let mut stakes_aggregated = BTreeMap::<String, (u64, u64)>::new();
     for (pubkey, account) in response {
         // Zero-length accounts owned by the stake program are system accounts that were re-assigned and are to be
         // ignored
@@ -250,19 +250,22 @@ pub fn build_current_stakes(
             _ => (),
         }
     }
-    stake_map.iter().for_each(|(pubkey, stake)| {
-        log::trace!(
-            "LCOAL Stake {pubkey} account:{:?} stake:{stake:?}",
-            stake.stake.voter_pubkey
-        );
-        (stakes_aggregated
-            .entry(stake.stake.voter_pubkey.to_string())
-            .or_insert((0, 0)))
-        .1 += stake.stake.stake;
-    });
+    stake_map
+        .iter()
+        .filter(|(pubkey, stake)| is_stake_to_add(**pubkey, &stake.stake, current_epoch_info))
+        .for_each(|(pubkey, stake)| {
+            log::trace!(
+                "LCOAL Stake {pubkey} account:{:?} stake:{stake:?}",
+                stake.stake.voter_pubkey
+            );
+            (stakes_aggregated
+                .entry(stake.stake.voter_pubkey.to_string())
+                .or_insert((0, 0)))
+            .1 += stake.stake.stake;
+        });
 
     //verify the list
-    let diff_list: HashMap<String, (u64, u64)> = stakes_aggregated
+    let diff_list: BTreeMap<String, (u64, u64)> = stakes_aggregated
         .iter()
         .filter(|(_, (rpc, local))| rpc != local)
         .map(|(pk, vals)| (pk.clone(), vals.clone()))

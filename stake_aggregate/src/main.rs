@@ -10,6 +10,9 @@
   }
 '
 */
+
+//TODO: add stake verify that it' not already desactivated.
+
 use crate::stakestore::extract_stakestore;
 use crate::stakestore::merge_stakestore;
 use crate::stakestore::StakeStore;
@@ -108,7 +111,8 @@ async fn run_loop<F: Interceptor>(mut client: GeyserGrpcClient<F>) -> anyhow::Re
     };
     let mut next_epoch_start_slot =
         current_epoch.slots_in_epoch - current_epoch.slot_index + current_epoch.absolute_slot;
-    log::info!("Run_loop init current_epoch:{current_epoch:?}");
+    let mut current_epoch_start_slot = current_epoch.absolute_slot - current_epoch.slot_index;
+    log::info!("Run_loop init {current_epoch_start_slot} {next_epoch_start_slot} current_epoch:{current_epoch:?}");
 
     let mut spawned_task_toexec = FuturesUnordered::new();
     let mut spawned_task_result = FuturesUnordered::new();
@@ -208,7 +212,6 @@ async fn run_loop<F: Interceptor>(mut client: GeyserGrpcClient<F>) -> anyhow::Re
                             let rpc_client = RpcClient::new_with_timeout_and_commitment(RPC_URL.to_string(), Duration::from_secs(600), CommitmentConfig::finalized());
                             let res = rpc_client.get_program_accounts(&solana_sdk::stake::program::id()).await;
                             log::info!("TaskToExec RpcGetPa END");
-                            //let res = crate::rpc::get_program_accounts(RPC_URL, &solana_sdk::stake::program::id()).await;
                             TaskResult::RpcGetPa(res)
                         },
                         TaskToExec::RpcGetCurrentEpoch => {
@@ -236,8 +239,9 @@ async fn run_loop<F: Interceptor>(mut client: GeyserGrpcClient<F>) -> anyhow::Re
                         //merge new PA with stake map in a specific thread
                         log::trace!("Run_loop before Program account stake merge START");
 
-                        let jh = tokio::task::spawn_blocking(|| {
-                            crate::stakestore::merge_program_account_in_strake_map(&mut stake_map, pa_list);
+                        let jh = tokio::task::spawn_blocking(move || {
+                            //update pa_list to set slot update to start epoq one.
+                            crate::stakestore::merge_program_account_in_strake_map(&mut stake_map, pa_list, current_epoch_start_slot);
                             TaskResult::MergePAList(stake_map)
                         });
                         spawned_task_result.push(jh);
@@ -386,7 +390,8 @@ async fn run_loop<F: Interceptor>(mut client: GeyserGrpcClient<F>) -> anyhow::Re
                                         current_slot.update_slot(&slot);
 
                                         if current_slot.confirmed_slot >= next_epoch_start_slot-1 { //slot can be non consecutif.
-                                            log::info!("End epoch slot. Calculate schedule at current slot:{}", current_slot.confirmed_slot);
+
+                                            log::info!("End epoch slot, change epoch. Calculate schedule at current slot:{}", current_slot.confirmed_slot);
                                             let Ok(stake_map) = extract_stakestore(&mut stakestore) else {
                                                 log::info!("Epoch schedule aborted because a getPA is currently running.");
                                                 continue;
@@ -395,6 +400,7 @@ async fn run_loop<F: Interceptor>(mut client: GeyserGrpcClient<F>) -> anyhow::Re
                                             //change epoch. Change manually then update using RPC.
                                             current_epoch.epoch +=1;
                                             current_epoch.slot_index = 1;
+                                            current_epoch_start_slot = next_epoch_start_slot;
                                             next_epoch_start_slot = next_epoch_start_slot + current_epoch.slots_in_epoch; //set to next epochs.
 
                                             log::info!("End slot epoch update calculated next epoch:{current_epoch:?}");
@@ -412,7 +418,8 @@ async fn run_loop<F: Interceptor>(mut client: GeyserGrpcClient<F>) -> anyhow::Re
                                             spawned_task_result.push(jh);
 
                                             spawned_task_toexec.push(futures::future::ready(TaskToExec::RpcGetCurrentEpoch));
-
+                                            //reload current Stake account a epoch change to synchronize.
+                                            spawned_task_toexec.push(futures::future::ready(TaskToExec::RpcGetPa));
 
                                         }
                                     }

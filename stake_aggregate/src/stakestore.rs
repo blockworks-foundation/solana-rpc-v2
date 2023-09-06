@@ -142,6 +142,7 @@ impl StakeStore {
 pub fn merge_program_account_in_strake_map(
     stake_map: &mut StakeMap,
     pa_list: Vec<(Pubkey, Account)>,
+    last_update_slot: Slot,
 ) {
     pa_list
         .into_iter()
@@ -158,7 +159,7 @@ pub fn merge_program_account_in_strake_map(
             let stake = StoredStake {
                 pubkey: pk,
                 stake: delegated_stake,
-                last_update_slot: 0,
+                last_update_slot,
                 write_version: 0,
             };
             stake_map_insert_stake(stake_map, pk, stake);
