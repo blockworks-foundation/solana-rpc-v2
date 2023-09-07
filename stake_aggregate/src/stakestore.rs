@@ -3,6 +3,7 @@ use crate::Slot;
 use anyhow::bail;
 use borsh::BorshDeserialize;
 use solana_sdk::account::Account;
+use solana_sdk::epoch_info::EpochInfo;
 use solana_sdk::pubkey::Pubkey;
 use solana_sdk::stake::state::Delegation;
 use solana_sdk::stake::state::StakeState;
@@ -17,20 +18,33 @@ pub fn extract_stakestore(stakestore: &mut StakeStore) -> anyhow::Result<StakeMa
     Ok(stake_map)
 }
 
-pub fn merge_stakestore(stakestore: &mut StakeStore, stake_map: StakeMap) -> anyhow::Result<()> {
+pub fn merge_stakestore(
+    stakestore: &mut StakeStore,
+    stake_map: StakeMap,
+    current_epoch: &EpochInfo,
+) -> anyhow::Result<()> {
     let new_store = std::mem::take(stakestore);
-    let new_store = new_store.merge_stake(stake_map)?;
+    let new_store = new_store.merge_stake(stake_map, current_epoch)?;
     *stakestore = new_store;
     Ok(())
 }
 
-fn stake_map_insert_stake(map: &mut StakeMap, stake_account: Pubkey, stake: StoredStake) {
+fn stake_map_insert_stake(
+    map: &mut StakeMap,
+    stake_account: Pubkey,
+    stake: StoredStake,
+    current_epoch: &EpochInfo,
+) {
+    //don't add stake that are already desactivated.
+    if stake.stake.deactivation_epoch < current_epoch.epoch {
+        return;
+    }
     match map.entry(stake_account) {
         // If value already exists, then increment it by one
         std::collections::hash_map::Entry::Occupied(occupied) => {
             let strstake = occupied.into_mut(); // <-- get mut reference to existing value
             if strstake.last_update_slot < stake.last_update_slot {
-                log::info!("Stake updated for: {stake_account} stake:{stake:?}");
+                log::trace!("Stake updated for: {stake_account} stake:{stake:?}");
                 *strstake = stake;
             }
         }
@@ -89,7 +103,7 @@ impl StakeStore {
         Ok((stakestore, self.stakes))
     }
 
-    pub fn merge_stake(self, stakes: StakeMap) -> anyhow::Result<Self> {
+    pub fn merge_stake(self, stakes: StakeMap, current_epoch: &EpochInfo) -> anyhow::Result<Self> {
         if !self.extracted {
             bail!("StakeStore merge of non extracted map. Try later");
         }
@@ -101,7 +115,7 @@ impl StakeStore {
 
         //apply stake added during extraction.
         for (stake_account, stake) in self.updates {
-            stakestore.insert_stake(stake_account, stake);
+            stakestore.insert_stake(stake_account, stake, &current_epoch);
         }
         Ok(stakestore)
     }
@@ -110,6 +124,7 @@ impl StakeStore {
         &mut self,
         new_account: AccountPretty,
         current_end_epoch_slot: Slot,
+        current_epoch: &EpochInfo,
     ) -> anyhow::Result<()> {
         let Ok(delegated_stake_opt) = new_account.read_stake() else {
             bail!("Can't read stake from account data");
@@ -123,19 +138,25 @@ impl StakeStore {
                 write_version: new_account.write_version,
             };
             //during extract push the new update or
-            //don't add account change that has been done in next epoch.
+            //don't insertnow account change that has been done in next epoch.
+            //put in update pool to be merged next epoch change.
             let insert_stake = !self.extracted || ststake.last_update_slot > current_end_epoch_slot;
             match insert_stake {
                 false => self.updates.push((new_account.pubkey, ststake)),
-                true => self.insert_stake(new_account.pubkey, ststake),
+                true => self.insert_stake(new_account.pubkey, ststake, current_epoch),
             }
         }
 
         Ok(())
     }
 
-    fn insert_stake(&mut self, stake_account: Pubkey, stake: StoredStake) {
-        stake_map_insert_stake(&mut self.stakes, stake_account, stake);
+    fn insert_stake(
+        &mut self,
+        stake_account: Pubkey,
+        stake: StoredStake,
+        current_epoch: &EpochInfo,
+    ) {
+        stake_map_insert_stake(&mut self.stakes, stake_account, stake, current_epoch);
     }
 }
 
@@ -143,6 +164,7 @@ pub fn merge_program_account_in_strake_map(
     stake_map: &mut StakeMap,
     pa_list: Vec<(Pubkey, Account)>,
     last_update_slot: Slot,
+    current_epoch: &EpochInfo,
 ) {
     pa_list
         .into_iter()
@@ -162,7 +184,7 @@ pub fn merge_program_account_in_strake_map(
                 last_update_slot,
                 write_version: 0,
             };
-            stake_map_insert_stake(stake_map, pk, stake);
+            stake_map_insert_stake(stake_map, pk, stake, current_epoch);
         });
 }
 

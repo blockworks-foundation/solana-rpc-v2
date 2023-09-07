@@ -244,10 +244,13 @@ async fn run_loop<F: Interceptor>(mut client: GeyserGrpcClient<F>) -> anyhow::Re
                         //merge new PA with stake map in a specific thread
                         log::trace!("Run_loop before Program account stake merge START");
 
-                        let jh = tokio::task::spawn_blocking(move || {
-                            //update pa_list to set slot update to start epoq one.
-                            crate::stakestore::merge_program_account_in_strake_map(&mut stake_map, pa_list, epoch_start_slot);
-                            TaskResult::MergePAList(stake_map)
+                        let jh = tokio::task::spawn_blocking({
+                            let move_epoch = current_epoch.clone();
+                            move || {
+                                //update pa_list to set slot update to start epoq one.
+                                crate::stakestore::merge_program_account_in_strake_map(&mut stake_map, pa_list, epoch_start_slot, &move_epoch);
+                                TaskResult::MergePAList(stake_map)
+                            }
                         });
                         spawned_task_result.push(jh);
                     }
@@ -277,7 +280,7 @@ async fn run_loop<F: Interceptor>(mut client: GeyserGrpcClient<F>) -> anyhow::Re
                         }
                     }
                     Ok(TaskResult::MergePAList(stake_map)) => {
-                        if let Err(err) = merge_stakestore(&mut stakestore, stake_map) {
+                        if let Err(err) = merge_stakestore(&mut stakestore, stake_map, &current_epoch) {
                             //should never occurs because only one extract can occurs at time.
                             // during PA no epoch schedule can be done.
                             log::warn!("merge stake on a non extract stake map err:{err}");
@@ -306,7 +309,7 @@ async fn run_loop<F: Interceptor>(mut client: GeyserGrpcClient<F>) -> anyhow::Re
                     }
                     Ok(TaskResult::ScheduleResult(schedule_opt, stake_map)) => {
                         //merge stake
-                        if let Err(err) = merge_stakestore(&mut stakestore, stake_map) {
+                        if let Err(err) = merge_stakestore(&mut stakestore, stake_map, &current_epoch) {
                             //should never occurs because only one extract can occurs at time.
                             // during PA no epoch schedule can be done.
                             log::warn!("merge stake on a non extract stake map err:{err}");
@@ -348,7 +351,7 @@ async fn run_loop<F: Interceptor>(mut client: GeyserGrpcClient<F>) -> anyhow::Re
                                             //log::trace!("Geyser receive new account");
                                             match account.owner {
                                                 solana_sdk::stake::program::ID => {
-                                                    if let Err(err) = stakestore.add_stake(account, next_epoch_start_slot-1) {
+                                                    if let Err(err) = stakestore.add_stake(account, next_epoch_start_slot-1, &current_epoch) {
                                                         log::warn!("Can't add new stake from account data err:{}", err);
                                                         continue;
                                                     }
