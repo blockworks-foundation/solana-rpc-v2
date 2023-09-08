@@ -36,9 +36,11 @@ fn stake_map_insert_stake(
     current_epoch: &EpochInfo,
 ) {
     //don't add stake that are already desactivated.
-    if stake.stake.deactivation_epoch < current_epoch.epoch {
-        return;
-    }
+    //there's some stran,ge stake that has activeate_epock = max epoch and desactivate ecpock 90 that are taken into account.
+    //Must be better defined.
+    // if stake.stake.deactivation_epoch < current_epoch.epoch {
+    //     return;
+    // }
     match map.entry(stake_account) {
         // If value already exists, then increment it by one
         std::collections::hash_map::Entry::Occupied(occupied) => {
@@ -191,7 +193,7 @@ pub fn merge_program_account_in_strake_map(
 pub fn read_stake_from_account_data(mut data: &[u8]) -> anyhow::Result<Option<Delegation>> {
     if data.is_empty() {
         log::warn!("Stake account with empty data. Can't read stake.");
-        bail!("Error: read VA account with empty data");
+        bail!("Error: read Stake account with empty data");
     }
     match StakeState::deserialize(&mut data)? {
         StakeState::Stake(_, stake) => Ok(Some(stake.delegation)),

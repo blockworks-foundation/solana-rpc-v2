@@ -238,6 +238,7 @@ pub fn build_current_stakes(
 
         match StakeState::deserialize(&mut account.data.as_slice()).unwrap() {
             StakeState::Stake(_, stake) => {
+                //vote account version
                 if is_stake_to_add(pubkey, &stake.delegation, current_epoch_info) {
                     // Add the stake in this stake account to the total for the delegated-to vote account
                     log::trace!("RPC Stake {pubkey} account:{account:?} stake:{stake:?}");
@@ -254,14 +255,14 @@ pub fn build_current_stakes(
         .iter()
         .filter(|(pubkey, stake)| is_stake_to_add(**pubkey, &stake.stake, current_epoch_info))
         .for_each(|(pubkey, stake)| {
-            log::trace!(
-                "LCOAL Stake {pubkey} account:{:?} stake:{stake:?}",
-                stake.stake.voter_pubkey
-            );
+            // log::trace!(
+            //     "LCOAL Stake {pubkey} account:{:?} stake:{stake:?}",
+            //     stake.stake.voter_pubkey
+            // );
             (stakes_aggregated
-                .entry(stake.stake.voter_pubkey.to_string())
+                .entry(pubkey.to_string())
                 .or_insert((0, 0)))
-            .1 += stake.stake.stake;
+            .1 = stake.stake.stake;
         });
 
     //verify the list

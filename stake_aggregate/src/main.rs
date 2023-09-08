@@ -16,6 +16,9 @@
 use crate::stakestore::extract_stakestore;
 use crate::stakestore::merge_stakestore;
 use crate::stakestore::StakeStore;
+use crate::votestore::extract_votestore;
+use crate::votestore::merge_votestore;
+use crate::votestore::VoteStore;
 use anyhow::bail;
 use futures_util::stream::FuturesUnordered;
 use futures_util::StreamExt;
@@ -44,6 +47,7 @@ use yellowstone_grpc_proto::{
 mod leader_schedule;
 mod rpc;
 mod stakestore;
+mod votestore;
 
 type Slot = u64;
 
@@ -57,6 +61,7 @@ const RPC_URL: &str = "http://localhost:8899";
 //const RPC_URL: &str = "https://api.devnet.solana.com";
 
 const STAKESTORE_INITIAL_CAPACITY: usize = 600000;
+const VOTESTORE_INITIAL_CAPACITY: usize = 600000;
 
 pub fn log_end_epoch(
     current_slot: Slot,
@@ -117,7 +122,11 @@ async fn run_loop<F: Interceptor>(mut client: GeyserGrpcClient<F>) -> anyhow::Re
     let mut spawned_task_result = FuturesUnordered::new();
 
     //use to set an initial state of all PA
-    spawned_task_toexec.push(futures::future::ready(TaskToExec::RpcGetPa(
+    spawned_task_toexec.push(futures::future::ready(TaskToExec::RpcGetStakeAccount(
+        current_epoch.absolute_slot - current_epoch.slot_index,
+        0,
+    )));
+    spawned_task_toexec.push(futures::future::ready(TaskToExec::RpcGetVoteAccount(
         current_epoch.absolute_slot - current_epoch.slot_index,
         0,
     )));
@@ -181,6 +190,9 @@ async fn run_loop<F: Interceptor>(mut client: GeyserGrpcClient<F>) -> anyhow::Re
     //make it run forever
     tokio::spawn(rpc_handle.stopped());
 
+    //Vote account management struct
+    let mut votestore = VoteStore::new(VOTESTORE_INITIAL_CAPACITY);
+
     loop {
         tokio::select! {
             _ = request_rx.recv() => {
@@ -209,15 +221,25 @@ async fn run_loop<F: Interceptor>(mut client: GeyserGrpcClient<F>) -> anyhow::Re
             Some(to_exec) = spawned_task_toexec.next() =>  {
                 let jh = tokio::spawn(async move {
                     match to_exec {
-                        TaskToExec::RpcGetPa(epoch_start_slot, sleep_time) => {
+                        TaskToExec::RpcGetStakeAccount(epoch_start_slot, sleep_time) => {
                             if sleep_time > 0 {
                                 tokio::time::sleep(Duration::from_secs(sleep_time)).await;
                             }
-                            log::info!("TaskToExec RpcGetPa start");
+                            log::info!("TaskToExec RpcGetStakeAccount start");
                             let rpc_client = RpcClient::new_with_timeout_and_commitment(RPC_URL.to_string(), Duration::from_secs(600), CommitmentConfig::finalized());
-                            let res = rpc_client.get_program_accounts(&solana_sdk::stake::program::id()).await;
-                            log::info!("TaskToExec RpcGetPa END");
-                            TaskResult::RpcGetPa(res, epoch_start_slot)
+                            let res_stake = rpc_client.get_program_accounts(&solana_sdk::stake::program::id()).await;
+                            log::info!("TaskToExec RpcGetStakeAccount END");
+                            TaskResult::RpcGetStakeAccount(res_stake, epoch_start_slot)
+                        },
+                        TaskToExec::RpcGetVoteAccount(epoch_start_slot, sleep_time) => {
+                            if sleep_time > 0 {
+                                tokio::time::sleep(Duration::from_secs(sleep_time)).await;
+                            }
+                            log::info!("TaskToExec RpcGetVoteAccount start");
+                            let rpc_client = RpcClient::new_with_timeout_and_commitment(RPC_URL.to_string(), Duration::from_secs(600), CommitmentConfig::finalized());
+                            let res_vote = rpc_client.get_program_accounts(&solana_sdk::vote::program::id()).await;
+                            log::info!("TaskToExec RpcGetVoteAccount END");
+                            TaskResult::RpcGetVoteAccount(res_vote, epoch_start_slot)
                         },
                         TaskToExec::RpcGetCurrentEpoch => {
                             //TODO remove no need epoch is calculated.
@@ -235,10 +257,10 @@ async fn run_loop<F: Interceptor>(mut client: GeyserGrpcClient<F>) -> anyhow::Re
             //Manage RPC call result execution
             Some(some_res) = spawned_task_result.next() =>  {
                 match some_res {
-                    Ok(TaskResult::RpcGetPa(Ok(pa_list), epoch_start_slot)) => {
+                    Ok(TaskResult::RpcGetStakeAccount(Ok(stake_list), epoch_start_slot)) => {
                         let Ok(mut stake_map) = extract_stakestore(&mut stakestore) else {
                             //retry later, epoch schedule is currently processed
-                            spawned_task_toexec.push(futures::future::ready(TaskToExec::RpcGetPa(epoch_start_slot, 0)));
+                            spawned_task_toexec.push(futures::future::ready(TaskToExec::RpcGetStakeAccount(epoch_start_slot, 0)));
                             continue;
                         };
                         //merge new PA with stake map in a specific thread
@@ -248,44 +270,25 @@ async fn run_loop<F: Interceptor>(mut client: GeyserGrpcClient<F>) -> anyhow::Re
                             let move_epoch = current_epoch.clone();
                             move || {
                                 //update pa_list to set slot update to start epoq one.
-                                crate::stakestore::merge_program_account_in_strake_map(&mut stake_map, pa_list, epoch_start_slot, &move_epoch);
-                                TaskResult::MergePAList(stake_map)
+                                crate::stakestore::merge_program_account_in_strake_map(&mut stake_map, stake_list, epoch_start_slot, &move_epoch);
+                                TaskResult::MergeStakeList(stake_map)
                             }
                         });
                         spawned_task_result.push(jh);
                     }
                     //getPA can fail should be retarted.
-                    Ok(TaskResult::RpcGetPa(Err(err), epoch_start_slot)) => {
-                        log::warn!("RPC call getPA return invalid result: {err:?}");
+                    Ok(TaskResult::RpcGetStakeAccount(Err(err), epoch_start_slot)) => {
+                        log::warn!("RPC call get Stake Account return invalid result: {err:?}");
                         //get pa can fail should be retarted.
-                        spawned_task_toexec.push(futures::future::ready(TaskToExec::RpcGetPa(epoch_start_slot, 0)));
+                        spawned_task_toexec.push(futures::future::ready(TaskToExec::RpcGetStakeAccount(epoch_start_slot, 0)));
                     }
-                    Ok(TaskResult::CurrentEpoch(Ok(epoch_info))) => {
-                        //TODO remove no need epoch is calculated.
-                        //only update new epoch slot if the RPC call return the next epoch. Some time it still return the current epoch.
-                        if current_epoch.epoch <= epoch_info.epoch {
-                            current_epoch = epoch_info;
-                            //calcualte slotindex with current slot. getEpichInfo doesn't return data  on current slot.
-                            if current_slot.confirmed_slot > current_epoch.absolute_slot {
-                                let diff =  current_slot.confirmed_slot - current_epoch.absolute_slot;
-                                current_epoch.absolute_slot += diff;
-                                current_epoch.slot_index += diff;
-                                log::trace!("Update current epoch, diff:{diff}");
-                            }
-                            next_epoch_start_slot = current_epoch.slots_in_epoch - current_epoch.slot_index + current_epoch.absolute_slot;
-                            log::info!("Run_loop update new epoch:{current_epoch:?} current slot:{current_slot:?} next_epoch_start_slot:{next_epoch_start_slot}");
-                        } else {
-                            //RPC epoch hasn't changed retry
-                            spawned_task_toexec.push(futures::future::ready(TaskToExec::RpcGetCurrentEpoch));
-                        }
-                    }
-                    Ok(TaskResult::MergePAList(stake_map)) => {
+                    Ok(TaskResult::MergeStakeList(stake_map)) => {
                         if let Err(err) = merge_stakestore(&mut stakestore, stake_map, &current_epoch) {
                             //should never occurs because only one extract can occurs at time.
                             // during PA no epoch schedule can be done.
                             log::warn!("merge stake on a non extract stake map err:{err}");
                             //restart the getPA.
-                            spawned_task_toexec.push(futures::future::ready(TaskToExec::RpcGetPa(0, 0)));
+                            spawned_task_toexec.push(futures::future::ready(TaskToExec::RpcGetStakeAccount(0, 0)));
                             continue;
                         };
                         log::info!("Run_loop Program account stake merge END");
@@ -307,6 +310,61 @@ async fn run_loop<F: Interceptor>(mut client: GeyserGrpcClient<F>) -> anyhow::Re
                         //end test
 
                     }
+                    Ok(TaskResult::RpcGetVoteAccount(Ok(vote_list), epoch_start_slot)) => {
+                        let Ok(mut vote_map) = extract_votestore(&mut votestore) else {
+                            //retry later, epoch schedule is currently processed
+                            spawned_task_toexec.push(futures::future::ready(TaskToExec::RpcGetVoteAccount(epoch_start_slot, 0)));
+                            continue;
+                        };
+                        //merge new PA with stake map in a specific thread
+                        log::trace!("Run_loop before Program account VOTE merge START");
+
+                        let jh = tokio::task::spawn_blocking({
+                            move || {
+                                //update pa_list to set slot update to start epoq one.
+                                crate::votestore::merge_program_account_in_vote_map(&mut vote_map, vote_list, epoch_start_slot);
+                                TaskResult::MergeVoteList(vote_map)
+                            }
+                        });
+                        spawned_task_result.push(jh);
+                    }
+                    //getPA can fail should be retarted.
+                    Ok(TaskResult::RpcGetVoteAccount(Err(err), epoch_start_slot)) => {
+                        log::warn!("RPC call getVote account return invalid result: {err:?}");
+                        //get pa can fail should be retarted.
+                        spawned_task_toexec.push(futures::future::ready(TaskToExec::RpcGetVoteAccount(epoch_start_slot, 0)));
+                    }
+
+                    Ok(TaskResult::MergeVoteList(vote_map)) => {
+                        if let Err(err) = merge_votestore(&mut votestore, vote_map) {
+                            //should never occurs because only one extract can occurs at time.
+                            // during PA no epoch schedule can be done.
+                            log::warn!("merge vote on a non extract stake map err:{err}");
+                            //restart the getPA.
+                            spawned_task_toexec.push(futures::future::ready(TaskToExec::RpcGetVoteAccount(0, 0)));
+                            continue;
+                        };
+                        log::info!("Run_loop Program Vote account merge END");
+                    }
+                    Ok(TaskResult::CurrentEpoch(Ok(epoch_info))) => {
+                        //TODO remove no need epoch is calculated.
+                        //only update new epoch slot if the RPC call return the next epoch. Some time it still return the current epoch.
+                        if current_epoch.epoch <= epoch_info.epoch {
+                            current_epoch = epoch_info;
+                            //calcualte slotindex with current slot. getEpichInfo doesn't return data  on current slot.
+                            if current_slot.confirmed_slot > current_epoch.absolute_slot {
+                                let diff =  current_slot.confirmed_slot - current_epoch.absolute_slot;
+                                current_epoch.absolute_slot += diff;
+                                current_epoch.slot_index += diff;
+                                log::trace!("Update current epoch, diff:{diff}");
+                            }
+                            next_epoch_start_slot = current_epoch.slots_in_epoch - current_epoch.slot_index + current_epoch.absolute_slot;
+                            log::info!("Run_loop update new epoch:{current_epoch:?} current slot:{current_slot:?} next_epoch_start_slot:{next_epoch_start_slot}");
+                        } else {
+                            //RPC epoch hasn't changed retry
+                            spawned_task_toexec.push(futures::future::ready(TaskToExec::RpcGetCurrentEpoch));
+                        }
+                    }
                     Ok(TaskResult::ScheduleResult(schedule_opt, stake_map)) => {
                         //merge stake
                         if let Err(err) = merge_stakestore(&mut stakestore, stake_map, &current_epoch) {
@@ -314,7 +372,7 @@ async fn run_loop<F: Interceptor>(mut client: GeyserGrpcClient<F>) -> anyhow::Re
                             // during PA no epoch schedule can be done.
                             log::warn!("merge stake on a non extract stake map err:{err}");
                             //restart the getPA.
-                            spawned_task_toexec.push(futures::future::ready(TaskToExec::RpcGetPa(0, 0)));
+                            spawned_task_toexec.push(futures::future::ready(TaskToExec::RpcGetStakeAccount(0, 0)));
                             continue;
                         };
 
@@ -358,11 +416,9 @@ async fn run_loop<F: Interceptor>(mut client: GeyserGrpcClient<F>) -> anyhow::Re
                                                 }
                                                 solana_sdk::vote::program::ID => {
                                                     //process vote accout notification
-                                                    match account.read_vote() {
-                                                        Ok(vote) => {
-                                                            //log::trace!("receive vote account with data:{vote:?}");
-                                                        },
-                                                        Err(err) => log::warn!("Error during vote account deserialization:{err}"),
+                                                    if let Err(err) = votestore.add_vote(account, next_epoch_start_slot-1) {
+                                                        log::warn!("Can't add new stake from account data err:{}", err);
+                                                        continue;
                                                     }
                                                 }
                                                 _ => log::warn!("receive an account notification from a unknown owner:{account:?}"),
@@ -406,7 +462,7 @@ async fn run_loop<F: Interceptor>(mut client: GeyserGrpcClient<F>) -> anyhow::Re
                                             };
 
                                             //reload PA account for new epoch start. TODO replace with bootstrap.
-                                            spawned_task_toexec.push(futures::future::ready(TaskToExec::RpcGetPa(next_epoch_start_slot, 30))); //Wait 30s to get new PA.
+                                            spawned_task_toexec.push(futures::future::ready(TaskToExec::RpcGetStakeAccount(next_epoch_start_slot, 30))); //Wait 30s to get new PA.
 
                                             //change epoch. Change manually then update using RPC.
                                             current_epoch.epoch +=1;
@@ -526,12 +582,16 @@ pub struct AccountPretty {
 
 impl AccountPretty {
     fn read_stake(&self) -> anyhow::Result<Option<Delegation>> {
+        if self.data.is_empty() {
+            log::warn!("Stake account with empty data. Can't read vote.");
+            bail!("Error: read Stake account with empty data");
+        }
         crate::stakestore::read_stake_from_account_data(self.data.as_slice())
     }
     fn read_vote(&self) -> anyhow::Result<VoteState> {
         if self.data.is_empty() {
             log::warn!("Vote account with empty data. Can't read vote.");
-            bail!("Error: read VA account with empty data");
+            bail!("Error: read Vote account with empty data");
         }
         Ok(VoteState::deserialize(&self.data)?)
     }
@@ -569,14 +629,17 @@ fn read_account(
 
 #[derive(Debug)]
 enum TaskToExec {
-    RpcGetPa(u64, u64), //epoch_start_slot, sleept time
+    RpcGetStakeAccount(u64, u64), //epoch_start_slot, sleept time
+    RpcGetVoteAccount(u64, u64),  //epoch_start_slot, sleept time
     RpcGetCurrentEpoch,
 }
 
 #[derive(Debug)]
 enum TaskResult {
-    RpcGetPa(Result<Vec<(Pubkey, Account)>, ClientError>, u64),
+    RpcGetStakeAccount(Result<Vec<(Pubkey, Account)>, ClientError>, u64), //stake_list, vote_list
+    RpcGetVoteAccount(Result<Vec<(Pubkey, Account)>, ClientError>, u64),  //stake_list, vote_list
     CurrentEpoch(Result<EpochInfo, ClientError>),
-    MergePAList(crate::stakestore::StakeMap),
+    MergeStakeList(crate::stakestore::StakeMap),
+    MergeVoteList(crate::votestore::VoteMap),
     ScheduleResult(Option<LeaderSchedule>, crate::stakestore::StakeMap),
 }
