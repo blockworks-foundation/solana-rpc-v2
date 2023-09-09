@@ -2,7 +2,6 @@ use crate::AccountPretty;
 use crate::Slot;
 use anyhow::bail;
 use solana_sdk::account::Account;
-use solana_sdk::epoch_info::EpochInfo;
 use solana_sdk::pubkey::Pubkey;
 use solana_sdk::vote::state::VoteState;
 use std::collections::HashMap;

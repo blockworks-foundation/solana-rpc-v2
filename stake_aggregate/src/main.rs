@@ -365,22 +365,38 @@ async fn run_loop<F: Interceptor>(mut client: GeyserGrpcClient<F>) -> anyhow::Re
                             spawned_task_toexec.push(futures::future::ready(TaskToExec::RpcGetCurrentEpoch));
                         }
                     }
-                    Ok(TaskResult::ScheduleResult(schedule_opt, stake_map)) => {
+                    Ok(TaskResult::ScheduleResult(schedule_opt, stake_map, vote_map)) => {
                         //merge stake
-                        if let Err(err) = merge_stakestore(&mut stakestore, stake_map, &current_epoch) {
+                        let merge_error = match merge_stakestore(&mut stakestore, stake_map, &current_epoch) {
+                            Ok(()) => false,
+                            Err(err) => {
+                                //should never occurs because only one extract can occurs at time.
+                                // during PA no epoch schedule can be done.
+                                log::warn!("merge stake on a non extract stake map err:{err}");
+                                //restart the getPA.
+                                spawned_task_toexec.push(futures::future::ready(TaskToExec::RpcGetStakeAccount(0, 0)));
+                                true
+                            }
+                        };
+                        //merge vote
+                        if let Err(err) = merge_votestore(&mut votestore, vote_map) {
                             //should never occurs because only one extract can occurs at time.
                             // during PA no epoch schedule can be done.
                             log::warn!("merge stake on a non extract stake map err:{err}");
                             //restart the getPA.
-                            spawned_task_toexec.push(futures::future::ready(TaskToExec::RpcGetStakeAccount(0, 0)));
+                            spawned_task_toexec.push(futures::future::ready(TaskToExec::RpcGetVoteAccount(0, 0)));
                             continue;
                         };
+
+                        if merge_error {
+                            continue;
+                        }
 
                         //verify calculated shedule with the one the RPC return.
                         if let Some(schedule) = schedule_opt {
                             tokio::task::spawn_blocking(|| {
                                 //10 second that the schedule has been calculated on the validator
-                                std::thread::sleep(std::time::Duration::from_secs(60));
+                                std::thread::sleep(std::time::Duration::from_secs(20));
                                 log::info!("Start Verify schedule");
                                 if let Err(err) = crate::leader_schedule::verify_schedule(schedule,RPC_URL.to_string()) {
                                     log::warn!("Error during schedule verification:{err}");
@@ -457,12 +473,19 @@ async fn run_loop<F: Interceptor>(mut client: GeyserGrpcClient<F>) -> anyhow::Re
 
                                             log::info!("End epoch slot, change epoch. Calculate schedule at current slot:{}", current_slot.confirmed_slot);
                                             let Ok(stake_map) = extract_stakestore(&mut stakestore) else {
-                                                log::info!("Epoch schedule aborted because a getPA is currently running.");
+                                                log::info!("Epoch schedule aborted because a extract_stakestore faild.");
+                                                continue;
+                                            };
+
+                                            let Ok(vote_map) = extract_votestore(&mut votestore) else {
+                                                log::info!("Epoch schedule aborted because extract_votestore faild.");
+                                                //cancel stake extraction
+                                                merge_stakestore(&mut stakestore, stake_map, &current_epoch).unwrap(); //just extracted.
                                                 continue;
                                             };
 
                                             //reload PA account for new epoch start. TODO replace with bootstrap.
-                                            spawned_task_toexec.push(futures::future::ready(TaskToExec::RpcGetStakeAccount(next_epoch_start_slot, 30))); //Wait 30s to get new PA.
+                                            //spawned_task_toexec.push(futures::future::ready(TaskToExec::RpcGetStakeAccount(next_epoch_start_slot, 30))); //Wait 30s to get new PA.
 
                                             //change epoch. Change manually then update using RPC.
                                             current_epoch.epoch +=1;
@@ -475,9 +498,9 @@ async fn run_loop<F: Interceptor>(mut client: GeyserGrpcClient<F>) -> anyhow::Re
                                             let jh = tokio::task::spawn_blocking({
                                                 let move_epoch = current_epoch.clone();
                                                 move || {
-                                                    let schedule = crate::leader_schedule::calculate_leader_schedule_from_stake_map(&stake_map, &move_epoch);
+                                                    let schedule = crate::leader_schedule::calculate_leader_schedule_from_stake_map(&stake_map, &vote_map, &move_epoch);
                                                     log::info!("End calculate leader schedule at slot:{}", current_slot.confirmed_slot);
-                                                    TaskResult::ScheduleResult(schedule.ok(), stake_map)
+                                                    TaskResult::ScheduleResult(schedule.ok(), stake_map, vote_map)
                                                 }
                                             });
                                             spawned_task_result.push(jh);
@@ -641,5 +664,9 @@ enum TaskResult {
     CurrentEpoch(Result<EpochInfo, ClientError>),
     MergeStakeList(crate::stakestore::StakeMap),
     MergeVoteList(crate::votestore::VoteMap),
-    ScheduleResult(Option<LeaderSchedule>, crate::stakestore::StakeMap),
+    ScheduleResult(
+        Option<LeaderSchedule>,
+        crate::stakestore::StakeMap,
+        crate::votestore::VoteMap,
+    ),
 }

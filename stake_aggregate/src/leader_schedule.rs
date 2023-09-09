@@ -14,15 +14,26 @@ const MAX_EPOCH_VALUE: u64 = 18446744073709551615;
 
 pub fn calculate_leader_schedule_from_stake_map(
     stake_map: &crate::stakestore::StakeMap,
+    vote_map: &crate::votestore::VoteMap,
     current_epoch_info: &EpochInfo,
 ) -> anyhow::Result<LeaderSchedule> {
     let mut stakes = HashMap::<Pubkey, u64>::new();
+    log::trace!(
+        "calculate_leader_schedule_from_stake_map vote map len:{} stake map len:{}",
+        vote_map.len(),
+        stake_map.len()
+    );
     //log::trace!("calculate_leader_schedule_from_stake_map stake_map:{stake_map:?} current_epoch_info:{current_epoch_info:?}");
     for storestake in stake_map.values() {
         //log::info!("Program_accounts stake:{stake:#?}");
         if is_stake_to_add(storestake.pubkey, &storestake.stake, &current_epoch_info) {
             // Add the stake in this stake account to the total for the delegated-to vote account
-            *(stakes.entry(storestake.stake.voter_pubkey).or_insert(0)) += storestake.stake.stake;
+            //get nodeid for vote account
+            let Some(nodeid) = vote_map.get(&storestake.stake.voter_pubkey).map(|v| v.vote_data.node_pubkey) else {
+                log::warn!("Vote account not found in vote map for stake vote account:{}", &storestake.stake.voter_pubkey);
+                continue;
+            };
+            *(stakes.entry(nodeid).or_insert(0)) += storestake.stake.stake;
         }
     }
     calculate_leader_schedule(stakes, current_epoch_info)
@@ -97,25 +108,26 @@ fn sort_stakes(stakes: &mut Vec<(Pubkey, u64)>) {
 }
 
 pub fn verify_schedule(schedule: LeaderSchedule, rpc_url: String) -> anyhow::Result<()> {
+    log::info!("verify_schedule Start.");
     let rpc_client = RpcClient::new_with_timeout_and_commitment(
         rpc_url,
         Duration::from_secs(600),
         CommitmentConfig::confirmed(),
     );
-    let Some(rpc_leader_schedule) = rpc_client.get_leader_schedule(None)? else {
+    let Some(mut rpc_leader_schedule) = rpc_client.get_leader_schedule(None)? else {
         log::info!("verify_schedule RPC return no schedule. Try later.");
         return Ok(());
     };
 
     log::info!("");
 
-    let vote_account = rpc_client.get_vote_accounts()?;
-    let node_vote_table = vote_account
-        .current
-        .into_iter()
-        .chain(vote_account.delinquent.into_iter())
-        .map(|va| (va.node_pubkey, va.vote_pubkey))
-        .collect::<HashMap<String, String>>();
+    // let vote_account = rpc_client.get_vote_accounts()?;
+    // let node_vote_table = vote_account
+    //     .current
+    //     .into_iter()
+    //     .chain(vote_account.delinquent.into_iter())
+    //     .map(|va| (va.node_pubkey, va.vote_pubkey))
+    //     .collect::<HashMap<String, String>>();
 
     //log::info!("node_vote_table:{node_vote_table:?}");
 
@@ -133,13 +145,13 @@ pub fn verify_schedule(schedule: LeaderSchedule, rpc_url: String) -> anyhow::Res
     // }
 
     //map rpc leader schedule node pubkey to vote account
-    let mut rpc_leader_schedule: HashMap<String, Vec<usize>> = rpc_leader_schedule.into_iter().filter_map(|(pk, slots)| match node_vote_table.get(&pk) {
-            Some(vote_account) => Some((vote_account.clone(),slots)),
-            None => {
-                log::warn!("verify_schedule RPC get_leader_schedule return some Node account:{pk} that are not mapped by rpc get_vote_accounts");
-                None
-            },
-        }).collect();
+    // let mut rpc_leader_schedule: HashMap<String, Vec<usize>> = rpc_leader_schedule.into_iter().filter_map(|(pk, slots)| match node_vote_table.get(&pk) {
+    //         Some(vote_account) => Some((vote_account.clone(),slots)),
+    //         None => {
+    //             log::warn!("verify_schedule RPC get_leader_schedule return some Node account:{pk} that are not mapped by rpc get_vote_accounts");
+    //             None
+    //         },
+    //     }).collect();
 
     // if let Err(err) = save_schedule_on_file("rpc", &rpc_leader_schedule) {
     //     log::error!("Error during saving generated schedule:{err}");
