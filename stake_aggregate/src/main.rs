@@ -214,7 +214,7 @@ async fn run_loop<F: Interceptor>(mut client: GeyserGrpcClient<F>) -> anyhow::Re
             //log interval
             _ = log_interval.tick() => {
                 log::info!("Run_loop update new epoch:{current_epoch:?} current slot:{current_slot:?} next epoch start slot:{next_epoch_start_slot}");
-                log::info!("Change epoch equality {} >= {}", current_slot.confirmed_slot, next_epoch_start_slot);
+                log::info!("Change epoch equality {} >= {}", current_slot.confirmed_slot, next_epoch_start_slot-1);
                 log::info!("number of stake accounts:{}", stakestore.nb_stake_account());
             }
             //Execute RPC call in another task

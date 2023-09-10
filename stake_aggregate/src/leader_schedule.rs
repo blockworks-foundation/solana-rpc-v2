@@ -266,15 +266,15 @@ pub fn build_current_stakes(
     stake_map
         .iter()
         .filter(|(pubkey, stake)| is_stake_to_add(**pubkey, &stake.stake, current_epoch_info))
-        .for_each(|(pubkey, stake)| {
+        .for_each(|(_, stake)| {
             // log::trace!(
             //     "LCOAL Stake {pubkey} account:{:?} stake:{stake:?}",
             //     stake.stake.voter_pubkey
             // );
             (stakes_aggregated
-                .entry(pubkey.to_string())
+                .entry(stake.stake.voter_pubkey.to_string())
                 .or_insert((0, 0)))
-            .1 = stake.stake.stake;
+            .1 += stake.stake.stake;
         });
 
     //verify the list
