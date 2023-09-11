@@ -46,7 +46,12 @@ fn stake_map_insert_stake(
         std::collections::hash_map::Entry::Occupied(occupied) => {
             let strstake = occupied.into_mut(); // <-- get mut reference to existing value
             if strstake.last_update_slot < stake.last_update_slot {
-                log::info!("Stake updated for: {stake_account} stake:{stake:?}");
+                if strstake.stake.stake != stake.stake.stake {
+                    log::info!(
+                        "Stake updated for: {stake_account} old_stake:{} stake:{stake:?}",
+                        stake.stake.stake
+                    );
+                }
                 *strstake = stake;
             }
         }
