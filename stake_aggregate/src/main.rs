@@ -1,4 +1,4 @@
-//RUST_BACKTRACE=1 RUST_LOG=stake_aggregate=trace cargo run --release
+//RUST_BACKTRACE=1 RUST_LOG=stake_aggregate=trace cargo run --release --bin stake_aggregate
 /*
  RPC calls;
  curl http://localhost:3000 -X POST -H "Content-Type: application/json" -d '

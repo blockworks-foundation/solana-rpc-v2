@@ -157,13 +157,19 @@ fn vote_map_insert_vote(map: &mut VoteMap, vote_account: Pubkey, vote_data: Stor
         std::collections::hash_map::Entry::Occupied(occupied) => {
             let voteacc = occupied.into_mut(); // <-- get mut reference to existing value
             if voteacc.last_update_slot < vote_data.last_update_slot {
-                log::trace!("Vote updated for: {vote_account}");
+                log::trace!(
+                    "Vote updated for: {vote_account} node_id:{}",
+                    vote_data.vote_data.node_pubkey
+                );
                 *voteacc = vote_data;
             }
         }
         // If value doesn't exist yet, then insert a new value of 1
         std::collections::hash_map::Entry::Vacant(vacant) => {
-            log::info!("New Vote added for: {vote_account}");
+            log::info!(
+                "New Vote added for: {vote_account} node_id:{}",
+                vote_data.vote_data.node_pubkey
+            );
             vacant.insert(vote_data);
         }
     };
