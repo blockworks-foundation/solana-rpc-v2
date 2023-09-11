@@ -9,6 +9,15 @@
     "params": []
   }
 '
+
+ curl http://localhost:3000 -X POST -H "Content-Type: application/json" -d '
+  {
+    "jsonrpc": "2.0",
+    "id" : 1,
+    "method": "bootstrap_accounts",
+    "params": []
+  }
+'
 */
 
 //TODO: add stake verify that it' not already desactivated.
@@ -144,7 +153,7 @@ async fn run_loop<F: Interceptor>(mut client: GeyserGrpcClient<F>) -> anyhow::Re
             account: vec![],
             owner: vec![
                 solana_sdk::stake::program::ID.to_string(),
-                //solana_sdk::vote::program::ID.to_string(),
+                solana_sdk::vote::program::ID.to_string(),
             ],
             filters: vec![],
         },
@@ -195,21 +204,34 @@ async fn run_loop<F: Interceptor>(mut client: GeyserGrpcClient<F>) -> anyhow::Re
 
     loop {
         tokio::select! {
-            _ = request_rx.recv() => {
-                tokio::task::spawn_blocking({
-                    log::info!("RPC start save_stakes");
-                    let current_stakes = stakestore.get_cloned_stake_map();
-                    let move_epoch = current_epoch.clone();
-                    move || {
-                        let current_stake = crate::leader_schedule::build_current_stakes(&current_stakes, &move_epoch, RPC_URL.to_string(), CommitmentConfig::confirmed());
-                        log::info!("RPC save_stakes generation done");
-                        if let Err(err) = crate::leader_schedule::save_schedule_on_file("stakes", &current_stake) {
-                            log::error!("Error during current stakes saving:{err}");
-                        }
-                        log::info!("RPC save_stakes END");
+            Some(req) = request_rx.recv() => {
+                match req {
+                    crate::rpc::Requests::SaveStakes => {
+                        tokio::task::spawn_blocking({
+                            log::info!("RPC start save_stakes");
+                            let current_stakes = stakestore.get_cloned_stake_map();
+                            let move_epoch = current_epoch.clone();
+                            move || {
+                                let current_stake = crate::leader_schedule::build_current_stakes(&current_stakes, &move_epoch, RPC_URL.to_string(), CommitmentConfig::confirmed());
+                                log::info!("RPC save_stakes generation done");
+                                if let Err(err) = crate::leader_schedule::save_schedule_on_file("stakes", &current_stake) {
+                                    log::error!("Error during current stakes saving:{err}");
+                                }
+                                log::info!("RPC save_stakes END");
 
+                            }
+                        });
                     }
-                });
+                    crate::rpc::Requests::BootstrapAccounts(tx) => {
+                        log::info!("RPC start save_stakes");
+                        let current_stakes = stakestore.get_cloned_stake_map();
+                        if let Err(err) = tx.send((current_stakes, current_slot.confirmed_slot)){
+                            println!("Channel error during sending bacl request status error:{err:?}");
+                        }
+                        log::info!("RPC bootstrap account send");
+                    }
+                }
+
             },
             //log interval
             _ = log_interval.tick() => {
@@ -557,7 +579,7 @@ async fn run_loop<F: Interceptor>(mut client: GeyserGrpcClient<F>) -> anyhow::Re
     //Ok(())
 }
 
-#[derive(Default, Debug)]
+#[derive(Default, Debug, Clone)]
 struct CurrentSlot {
     processed_slot: u64,
     confirmed_slot: u64,

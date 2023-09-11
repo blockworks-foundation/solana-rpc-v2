@@ -2,6 +2,7 @@ use crate::AccountPretty;
 use crate::Slot;
 use anyhow::bail;
 use borsh::BorshDeserialize;
+use serde::{Deserialize, Serialize};
 use solana_sdk::account::Account;
 use solana_sdk::epoch_info::EpochInfo;
 use solana_sdk::pubkey::Pubkey;
@@ -63,7 +64,7 @@ fn stake_map_insert_stake(
     };
 }
 
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub struct StoredStake {
     pub pubkey: Pubkey,
     pub stake: Delegation,
@@ -200,7 +201,7 @@ pub fn read_stake_from_account_data(mut data: &[u8]) -> anyhow::Result<Option<De
         log::warn!("Stake account with empty data. Can't read stake.");
         bail!("Error: read Stake account with empty data");
     }
-    match StakeState::deserialize(&mut data)? {
+    match BorshDeserialize::deserialize(&mut data)? {
         StakeState::Stake(_, stake) => Ok(Some(stake.delegation)),
         StakeState::Initialized(_) => Ok(None),
         other => {
