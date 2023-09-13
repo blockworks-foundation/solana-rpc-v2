@@ -1,4 +1,7 @@
+use crate::stakestore::{extract_stakestore, merge_stakestore, StakeMap, StakeStore};
+use crate::votestore::{extract_votestore, merge_votestore, VoteMap, VoteStore};
 use anyhow::bail;
+use futures::stream::FuturesUnordered;
 use solana_client::rpc_client::RpcClient;
 use solana_ledger::leader_schedule::LeaderSchedule;
 use solana_sdk::clock::NUM_CONSECUTIVE_LEADER_SLOTS;
@@ -9,10 +12,134 @@ use solana_sdk::stake::state::Delegation;
 use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::time::Duration;
+use tokio::task::JoinHandle;
 
 const MAX_EPOCH_VALUE: u64 = 18446744073709551615;
 
-pub fn calculate_leader_schedule_from_stake_map(
+/*
+Leader schedule calculus state diagram
+
+InitLeaderschedule
+       |
+   |extract store stake and vote|
+     |                   |
+   Error          CalculateScedule(stakes, votes)
+     |                   |
+ | Wait(1s)|       |Calculate schedule|
+     |                       |
+InitLeaderscedule        MergeStore(stakes, votes, schedule)
+                             |                      |
+                           Error                   SaveSchedule(schedule)
+                             |                              |
+              |never occurs restart (wait 1s)|         |save schedule and verify (opt)|
+                             |
+                      InitLeaderscedule
+*/
+
+pub fn run_leader_schedule_events(
+    event: LeaderScheduleEvent,
+    bootstrap_tasks: &mut FuturesUnordered<JoinHandle<LeaderScheduleEvent>>,
+    stakestore: &mut StakeStore,
+    votestore: &mut VoteStore,
+) -> Option<(Option<LeaderSchedule>, EpochInfo)> {
+    let result = process_leadershedule_event(event, stakestore, votestore);
+    match result {
+        LeaderScheduleResult::TaskHandle(jh) => {
+            bootstrap_tasks.push(jh);
+            None
+        }
+        LeaderScheduleResult::Event(event) => {
+            run_leader_schedule_events(event, bootstrap_tasks, stakestore, votestore)
+        }
+        LeaderScheduleResult::End(schedule, epoch) => Some((schedule, epoch)),
+    }
+}
+
+pub struct LeaderScheduleData {
+    pub leader_schedule: Option<LeaderSchedule>,
+    pub schedule_epoch: EpochInfo,
+}
+
+pub enum LeaderScheduleEvent {
+    InitLeaderschedule(EpochInfo),
+    CalculateScedule(StakeMap, VoteMap, EpochInfo),
+    MergeStoreAndSaveSchedule(StakeMap, VoteMap, Option<LeaderSchedule>, EpochInfo),
+}
+
+enum LeaderScheduleResult {
+    TaskHandle(JoinHandle<LeaderScheduleEvent>),
+    Event(LeaderScheduleEvent),
+    End(Option<LeaderSchedule>, EpochInfo),
+}
+
+fn process_leadershedule_event(
+    event: LeaderScheduleEvent,
+    stakestore: &mut StakeStore,
+    votestore: &mut VoteStore,
+) -> LeaderScheduleResult {
+    match event {
+        LeaderScheduleEvent::InitLeaderschedule(schedule_epoch) => {
+            log::info!("LeaderScheduleEvent::InitLeaderschedule RECV");
+            match (extract_stakestore(stakestore), extract_votestore(votestore)) {
+                (Ok(stake_map), Ok(vote_map)) => LeaderScheduleResult::Event(
+                    LeaderScheduleEvent::CalculateScedule(stake_map, vote_map, schedule_epoch),
+                ),
+                _ => {
+                    log::warn!("process_leadershedule_event error during extract store");
+                    let jh = tokio::spawn(async move {
+                        tokio::time::sleep(Duration::from_secs(1)).await;
+                        LeaderScheduleEvent::InitLeaderschedule(schedule_epoch)
+                    });
+                    LeaderScheduleResult::TaskHandle(jh)
+                }
+            }
+        }
+        LeaderScheduleEvent::CalculateScedule(stake_map, vote_map, schedule_epoch) => {
+            log::info!("LeaderScheduleEvent::CalculateScedule RECV");
+            let jh = tokio::task::spawn_blocking({
+                move || {
+                    let schedule = crate::leader_schedule::calculate_leader_schedule_from_stake_map(
+                        &stake_map,
+                        &vote_map,
+                        &schedule_epoch,
+                    );
+                    log::info!("End calculate leader schedule");
+                    LeaderScheduleEvent::MergeStoreAndSaveSchedule(
+                        stake_map,
+                        vote_map,
+                        schedule.ok(),
+                        schedule_epoch,
+                    )
+                }
+            });
+            LeaderScheduleResult::TaskHandle(jh)
+        }
+        LeaderScheduleEvent::MergeStoreAndSaveSchedule(
+            stake_map,
+            vote_map,
+            schedule,
+            schedule_epoch,
+        ) => {
+            log::info!("LeaderScheduleEvent::MergeStoreAndSaveSchedule RECV");
+            match (
+                merge_stakestore(stakestore, stake_map, schedule_epoch.epoch),
+                merge_votestore(votestore, vote_map),
+            ) {
+                (Ok(()), Ok(())) => LeaderScheduleResult::End(schedule, schedule_epoch),
+                _ => {
+                    //this shoud never arrive because the store has been extracted before.
+                    //TODO remove this error using type state
+                    log::warn!("LeaderScheduleEvent::MergeStoreAndSaveSchedule merge stake or vote fail,  non extracted stake/vote map err, restart Schedule");
+                    LeaderScheduleResult::Event(LeaderScheduleEvent::InitLeaderschedule(
+                        schedule_epoch,
+                    ))
+                }
+            }
+        }
+    }
+}
+
+fn calculate_leader_schedule_from_stake_map(
     stake_map: &crate::stakestore::StakeMap,
     vote_map: &crate::votestore::VoteMap,
     current_epoch_info: &EpochInfo,

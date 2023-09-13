@@ -4,7 +4,6 @@ use anyhow::bail;
 use borsh::BorshDeserialize;
 use serde::{Deserialize, Serialize};
 use solana_sdk::account::Account;
-use solana_sdk::epoch_info::EpochInfo;
 use solana_sdk::pubkey::Pubkey;
 use solana_sdk::stake::state::Delegation;
 use solana_sdk::stake::state::StakeState;
@@ -22,10 +21,10 @@ pub fn extract_stakestore(stakestore: &mut StakeStore) -> anyhow::Result<StakeMa
 pub fn merge_stakestore(
     stakestore: &mut StakeStore,
     stake_map: StakeMap,
-    current_epoch: &EpochInfo,
+    current_epoch_slot: Slot,
 ) -> anyhow::Result<()> {
     let new_store = std::mem::take(stakestore);
-    let new_store = new_store.merge_stake(stake_map, current_epoch)?;
+    let new_store = new_store.merge_stake(stake_map, current_epoch_slot)?;
     *stakestore = new_store;
     Ok(())
 }
@@ -34,12 +33,12 @@ fn stake_map_insert_stake(
     map: &mut StakeMap,
     stake_account: Pubkey,
     stake: StoredStake,
-    current_epoch: &EpochInfo,
+    current_epoch: u64,
 ) {
     //don't add stake that are already desactivated.
     //there's some stran,ge stake that has activeate_epock = max epoch and desactivate ecpock 90 that are taken into account.
     //Must be better defined.
-    // if stake.stake.deactivation_epoch < current_epoch.epoch {
+    // if stake.stake.deactivation_epoch < current_epoch {
     //     return;
     // }
     match map.entry(stake_account) {
@@ -50,7 +49,7 @@ fn stake_map_insert_stake(
                 if strstake.stake.stake != stake.stake.stake {
                     log::info!(
                         "Stake updated for: {stake_account} old_stake:{} stake:{stake:?}",
-                        stake.stake.stake
+                        strstake.stake.stake
                     );
                 }
                 *strstake = stake;
@@ -111,7 +110,7 @@ impl StakeStore {
         Ok((stakestore, self.stakes))
     }
 
-    pub fn merge_stake(self, stakes: StakeMap, current_epoch: &EpochInfo) -> anyhow::Result<Self> {
+    pub fn merge_stake(self, stakes: StakeMap, current_epoch: u64) -> anyhow::Result<Self> {
         if !self.extracted {
             bail!("StakeStore merge of non extracted map. Try later");
         }
@@ -123,7 +122,7 @@ impl StakeStore {
 
         //apply stake added during extraction.
         for (stake_account, stake) in self.updates {
-            stakestore.insert_stake(stake_account, stake, &current_epoch);
+            stakestore.insert_stake(stake_account, stake, current_epoch);
         }
         Ok(stakestore)
     }
@@ -132,7 +131,7 @@ impl StakeStore {
         &mut self,
         new_account: AccountPretty,
         current_end_epoch_slot: Slot,
-        current_epoch: &EpochInfo,
+        current_epoch: u64,
     ) -> anyhow::Result<()> {
         let Ok(delegated_stake_opt) = new_account.read_stake() else {
             bail!("Can't read stake from account data");
@@ -158,12 +157,7 @@ impl StakeStore {
         Ok(())
     }
 
-    fn insert_stake(
-        &mut self,
-        stake_account: Pubkey,
-        stake: StoredStake,
-        current_epoch: &EpochInfo,
-    ) {
+    fn insert_stake(&mut self, stake_account: Pubkey, stake: StoredStake, current_epoch: u64) {
         stake_map_insert_stake(&mut self.stakes, stake_account, stake, current_epoch);
     }
 }
@@ -172,7 +166,7 @@ pub fn merge_program_account_in_strake_map(
     stake_map: &mut StakeMap,
     pa_list: Vec<(Pubkey, Account)>,
     last_update_slot: Slot,
-    current_epoch: &EpochInfo,
+    current_epoch: u64,
 ) {
     pa_list
         .into_iter()

@@ -30,6 +30,7 @@ pub enum Requests {
 
 pub(crate) async fn run_server(request_tx: Sender<Requests>) -> Result<ServerHandle, RpcError> {
     let server = Server::builder()
+        .max_response_body_size(1048576000)
         .build(RPC_ADDRESS.parse::<SocketAddr>()?)
         .await?;
     let mut module = RpcModule::new(request_tx);
