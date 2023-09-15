@@ -21,10 +21,10 @@ pub fn extract_stakestore(stakestore: &mut StakeStore) -> anyhow::Result<StakeMa
 pub fn merge_stakestore(
     stakestore: &mut StakeStore,
     stake_map: StakeMap,
-    current_epoch_slot: Slot,
+    current_epoch: u64,
 ) -> anyhow::Result<()> {
     let new_store = std::mem::take(stakestore);
-    let new_store = new_store.merge_stake(stake_map, current_epoch_slot)?;
+    let new_store = new_store.merge_stakes(stake_map, current_epoch)?;
     *stakestore = new_store;
     Ok(())
 }
@@ -33,6 +33,7 @@ fn stake_map_insert_stake(
     map: &mut StakeMap,
     stake_account: Pubkey,
     stake: StoredStake,
+    //TODO manage already deractivated stake.
     current_epoch: u64,
 ) {
     //don't add stake that are already desactivated.
@@ -63,6 +64,17 @@ fn stake_map_insert_stake(
     };
 }
 
+#[derive(Debug, Default)]
+enum ExtractedAction {
+    Insert {
+        stake_account: Pubkey,
+        stake: StoredStake,
+    },
+    Remove(Pubkey),
+    #[default]
+    None,
+}
+
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub struct StoredStake {
     pub pubkey: Pubkey,
@@ -74,7 +86,7 @@ pub struct StoredStake {
 #[derive(Debug, Default)]
 pub struct StakeStore {
     stakes: StakeMap,
-    updates: Vec<(Pubkey, StoredStake)>,
+    updates: Vec<ExtractedAction>,
     extracted: bool,
 }
 
@@ -110,7 +122,7 @@ impl StakeStore {
         Ok((stakestore, self.stakes))
     }
 
-    pub fn merge_stake(self, stakes: StakeMap, current_epoch: u64) -> anyhow::Result<Self> {
+    pub fn merge_stakes(self, stakes: StakeMap, current_epoch: u64) -> anyhow::Result<Self> {
         if !self.extracted {
             bail!("StakeStore merge of non extracted map. Try later");
         }
@@ -121,8 +133,19 @@ impl StakeStore {
         };
 
         //apply stake added during extraction.
-        for (stake_account, stake) in self.updates {
-            stakestore.insert_stake(stake_account, stake, current_epoch);
+        for action in self.updates {
+            log::info!("merge_stakes update action:{action:?}");
+            match action {
+                ExtractedAction::Insert {
+                    stake_account,
+                    stake,
+                } => {
+                    stakestore.insert_stake(stake_account, stake, current_epoch);
+                }
+                ExtractedAction::Remove(account_pk) => stakestore.remove_from_store(&account_pk),
+
+                ExtractedAction::None => (),
+            };
         }
         Ok(stakestore)
     }
@@ -149,7 +172,10 @@ impl StakeStore {
             //put in update pool to be merged next epoch change.
             let insert_stake = !self.extracted || ststake.last_update_slot > current_end_epoch_slot;
             match insert_stake {
-                false => self.updates.push((new_account.pubkey, ststake)),
+                false => self.updates.push(ExtractedAction::Insert {
+                    stake_account: new_account.pubkey,
+                    stake: ststake,
+                }),
                 true => self.insert_stake(new_account.pubkey, ststake, current_epoch),
             }
         }
@@ -157,6 +183,18 @@ impl StakeStore {
         Ok(())
     }
 
+    pub fn remove_stake(&mut self, account_pk: Pubkey) {
+        match self.extracted {
+            false => self.remove_from_store(&account_pk),
+
+            true => self.updates.push(ExtractedAction::Remove(account_pk)),
+        }
+    }
+
+    fn remove_from_store(&mut self, account_pk: &Pubkey) {
+        log::info!("remove_from_store for {}", account_pk.to_string());
+        self.stakes.remove(account_pk);
+    }
     fn insert_stake(&mut self, stake_account: Pubkey, stake: StoredStake, current_epoch: u64) {
         stake_map_insert_stake(&mut self.stakes, stake_account, stake, current_epoch);
     }

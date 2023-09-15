@@ -2,16 +2,49 @@ use crate::stakestore::StakeMap;
 use crate::stakestore::StoredStake;
 use crate::Slot;
 use jsonrpsee_core::error::Error as JsonRpcError;
-use std::collections::HashMap;
-//use jsonrpsee_http_server::{HttpServerBuilder, HttpServerHandle, RpcModule};
+use jsonrpsee_proc_macros::rpc;
 use jsonrpsee_server::{RpcModule, Server, ServerHandle};
+use solana_client::rpc_config::RpcContextConfig;
+use solana_client::rpc_response::RpcBlockhash;
+use solana_client::rpc_response::RpcVoteAccountStatus;
+use solana_rpc_client_api::response::Response as RpcResponse;
+use solana_sdk::epoch_info::EpochInfo;
+use std::collections::HashMap;
 use std::net::SocketAddr;
 use thiserror::Error;
 use tokio::sync::mpsc::Sender;
 use tokio::sync::oneshot;
 
-const RPC_ADDRESS: &str = "0.0.0.0:3000";
+const PRIVATE_RPC_ADDRESS: &str = "0.0.0.0:3000";
 
+pub type RpcResult<T> = std::result::Result<T, jsonrpsee_types::error::ErrorCode>;
+
+//public RPC access
+#[rpc(server)]
+pub trait ConsensusRpc {
+    #[method(name = "getLatestBlockhash")]
+    async fn get_latest_blockhash(
+        &self,
+        config: Option<RpcContextConfig>,
+    ) -> RpcResult<RpcResponse<RpcBlockhash>>;
+
+    #[method(name = "getSlot")]
+    async fn get_slot(&self, config: Option<RpcContextConfig>) -> RpcResult<RpcResponse<Slot>>;
+
+    #[method(name = "getEpochInfo")]
+    async fn get_epoch_info(&self) -> RpcResult<RpcResponse<EpochInfo>>;
+
+    #[method(name = "getLeaderSchedule")]
+    async fn get_leader_schedule(
+        &self,
+        slot: Option<u64>,
+    ) -> RpcResult<RpcResponse<Option<HashMap<String, Vec<usize>>>>>;
+
+    #[method(name = "getVoteAccounts")]
+    async fn get_vote_accounts(&self) -> RpcResult<RpcResponse<RpcVoteAccountStatus>>;
+}
+
+//internal RPC access
 #[derive(Debug, Error)]
 pub enum RpcError {
     #[error("Error during during json RPC request receive '{0}'")]
@@ -31,7 +64,7 @@ pub enum Requests {
 pub(crate) async fn run_server(request_tx: Sender<Requests>) -> Result<ServerHandle, RpcError> {
     let server = Server::builder()
         .max_response_body_size(1048576000)
-        .build(RPC_ADDRESS.parse::<SocketAddr>()?)
+        .build(PRIVATE_RPC_ADDRESS.parse::<SocketAddr>()?)
         .await?;
     let mut module = RpcModule::new(request_tx);
 

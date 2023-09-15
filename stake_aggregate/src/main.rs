@@ -33,6 +33,7 @@ use futures_util::stream::FuturesUnordered;
 use futures_util::StreamExt;
 use solana_sdk::commitment_config::CommitmentConfig;
 use solana_sdk::pubkey::Pubkey;
+use solana_sdk::stake::instruction::StakeInstruction;
 use solana_sdk::stake::state::Delegation;
 use solana_sdk::vote::state::VoteState;
 use std::collections::HashMap;
@@ -173,8 +174,8 @@ async fn run_loop<F: Interceptor>(mut client: GeyserGrpcClient<F>) -> anyhow::Re
             accounts.clone(),   //accounts
             Default::default(), //tx
             Default::default(), //entry
-            //blocks,             //full block
-            Default::default(), //full block
+            blocks.clone(),     //full block
+            //Default::default(), //full block
             //blocks_meta,        //block meta
             Default::default(), //block meta
             Some(CommitmentLevel::Confirmed),
@@ -183,7 +184,7 @@ async fn run_loop<F: Interceptor>(mut client: GeyserGrpcClient<F>) -> anyhow::Re
         .await?;
 
     //log current data at interval TODO to be removed.  only for test.
-    let mut log_interval = tokio::time::interval(Duration::from_millis(10000));
+    let mut log_interval = tokio::time::interval(Duration::from_millis(600000));
 
     //start local rpc access to get RPC request.
     let (request_tx, mut request_rx) = tokio::sync::mpsc::channel(100);
@@ -345,7 +346,41 @@ async fn run_loop<F: Interceptor>(mut client: GeyserGrpcClient<F>) -> anyhow::Re
                                         log::info!("Receive Block Meta at slot: {}", block_meta.slot);
                                     }
                                     Some(UpdateOneof::Block(block)) => {
-                                        log::info!("Receive Block at slot: {}", block.slot);
+                                        log::trace!("Receive Block at slot: {}", block.slot);
+                                        //parse to detect stake merge tx.
+                                        //first in the main thread then in a specific thread.
+                                        let stake_public_key: Vec<u8> = solana_sdk::stake::program::id().to_bytes().to_vec();
+                                        for tx in block.transactions {
+                                            if !tx.is_vote {
+                                                    if let Some(message) = tx
+                                                        .transaction
+                                                        .and_then(|tx| tx.message)
+                                                        .filter(|msg| msg.account_keys.contains(&stake_public_key))
+                                                    {
+                                                        //for debug get stake account index
+                                                        let index = message.account_keys.iter().enumerate().filter_map(|(index,acc)| (*acc == stake_public_key). then_some(index)).next();
+                                                        log::info!("stake account index:{index:?}");
+
+                                                        log::info!("Found tx with stake account with instructions:{}", message.instructions.len());
+
+                                                        //merge and delegate has 1 instruction. Create as 2 instructions and the first is not a StakeInstruction.
+                                                        if message.instructions.len() == 1 {
+                                                            let Ok(stake_inst)  = bincode::deserialize::<StakeInstruction>(&message.instructions[0].data) else {
+                                                                log::info!("Error during stake instruction decoding :{:?}", &message.instructions[0].data);
+                                                                continue;
+                                                            };
+                                                            if let StakeInstruction::Merge = stake_inst {
+                                                                let source_account = &message.account_keys[message.instructions[0].accounts[1] as usize];
+                                                                let source_bytes: [u8; 32] = source_account[..solana_sdk::pubkey::PUBKEY_BYTES].try_into().unwrap();
+                                                                let source_pubkey = Pubkey::new_from_array(source_bytes);
+                                                                log::info!("DETECT MERGE for source account:{}", source_pubkey.to_string());
+                                                                stakestore.remove_stake(source_pubkey);
+                                                            }
+                                                        }
+                                                    }
+                                            }
+                                        }
+
                                     }
                                     Some(UpdateOneof::Ping(_)) => log::trace!("UpdateOneof::Ping"),
                                     bad_msg => {
@@ -362,13 +397,14 @@ async fn run_loop<F: Interceptor>(mut client: GeyserGrpcClient<F>) -> anyhow::Re
                      }
                      None => {
                         log::warn!("The geyser stream close try to reconnect and resynchronize.");
+                        //TODO call same initial code.
                         let new_confirmed_stream = client
                         .subscribe_once(
                             slots.clone(),
                             accounts.clone(),           //accounts
                             Default::default(), //tx
                             Default::default(), //entry
-                            Default::default(), //full block
+                            blocks.clone(), //full block
                             Default::default(), //block meta
                             Some(CommitmentLevel::Confirmed),
                             vec![],
