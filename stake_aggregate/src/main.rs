@@ -33,7 +33,6 @@ use futures_util::stream::FuturesUnordered;
 use futures_util::StreamExt;
 use solana_sdk::commitment_config::CommitmentConfig;
 use solana_sdk::pubkey::Pubkey;
-use solana_sdk::stake::instruction::StakeInstruction;
 use solana_sdk::stake::state::Delegation;
 use solana_sdk::vote::state::VoteState;
 use std::collections::HashMap;
@@ -357,26 +356,8 @@ async fn run_loop<F: Interceptor>(mut client: GeyserGrpcClient<F>) -> anyhow::Re
                                                         .and_then(|tx| tx.message)
                                                         .filter(|msg| msg.account_keys.contains(&stake_public_key))
                                                     {
-                                                        //for debug get stake account index
-                                                        let index = message.account_keys.iter().enumerate().filter_map(|(index,acc)| (*acc == stake_public_key). then_some(index)).next();
-                                                        log::info!("stake account index:{index:?}");
 
-                                                        log::info!("Found tx with stake account with instructions:{}", message.instructions.len());
-
-                                                        //merge and delegate has 1 instruction. Create as 2 instructions and the first is not a StakeInstruction.
-                                                        if message.instructions.len() == 1 {
-                                                            let Ok(stake_inst)  = bincode::deserialize::<StakeInstruction>(&message.instructions[0].data) else {
-                                                                log::info!("Error during stake instruction decoding :{:?}", &message.instructions[0].data);
-                                                                continue;
-                                                            };
-                                                            if let StakeInstruction::Merge = stake_inst {
-                                                                let source_account = &message.account_keys[message.instructions[0].accounts[1] as usize];
-                                                                let source_bytes: [u8; 32] = source_account[..solana_sdk::pubkey::PUBKEY_BYTES].try_into().unwrap();
-                                                                let source_pubkey = Pubkey::new_from_array(source_bytes);
-                                                                log::info!("DETECT MERGE for source account:{}", source_pubkey.to_string());
-                                                                stakestore.remove_stake(source_pubkey);
-                                                            }
-                                                        }
+                                                        crate::stakestore::process_stake_tx_message(&mut stakestore, message, &stake_public_key);
                                                     }
                                             }
                                         }
