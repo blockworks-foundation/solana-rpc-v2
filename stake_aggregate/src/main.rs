@@ -349,16 +349,22 @@ async fn run_loop<F: Interceptor>(mut client: GeyserGrpcClient<F>) -> anyhow::Re
                                         //parse to detect stake merge tx.
                                         //first in the main thread then in a specific thread.
                                         let stake_public_key: Vec<u8> = solana_sdk::stake::program::id().to_bytes().to_vec();
-                                        for tx in block.transactions {
-                                            if !tx.is_vote {
-                                                    if let Some(message) = tx
-                                                        .transaction
-                                                        .and_then(|tx| tx.message)
-                                                        .filter(|msg| msg.account_keys.contains(&stake_public_key))
-                                                    {
-
-                                                        crate::stakestore::process_stake_tx_message(&mut stakestore, message, &stake_public_key);
+                                        for notif_tx in block.transactions {
+                                            if !notif_tx.is_vote {
+                                                if let Some(message) = notif_tx.transaction.and_then(|tx| tx.message) {
+                                                    for instruction in message.instructions {
+                                                        //filter stake tx
+                                                        if message.account_keys[instruction.program_id_index as usize] ==  stake_public_key {
+                                                            let program_index = instruction.program_id_index;
+                                                            crate::stakestore::process_stake_tx_message(
+                                                                &mut stakestore
+                                                                , &message.account_keys
+                                                                , instruction
+                                                                , program_index
+                                                            );
+                                                        }
                                                     }
+                                                }
                                             }
                                         }
 
