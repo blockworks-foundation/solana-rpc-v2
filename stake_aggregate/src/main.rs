@@ -355,6 +355,10 @@ async fn run_loop<F: Interceptor>(mut client: GeyserGrpcClient<F>) -> anyhow::Re
                                                     for instruction in message.instructions {
                                                         //filter stake tx
                                                         if message.account_keys[instruction.program_id_index as usize] ==  stake_public_key {
+                                                            let source_bytes: [u8; 64] = notif_tx.signature[..solana_sdk::signature::SIGNATURE_BYTES]
+                                                                .try_into()
+                                                                .unwrap();
+                                                            log::info!("New stake Tx sign:{}", solana_sdk::signature::Signature::from(source_bytes).to_string());
                                                             let program_index = instruction.program_id_index;
                                                             crate::stakestore::process_stake_tx_message(
                                                                 &mut stakestore
