@@ -359,7 +359,11 @@ async fn run_loop<F: Interceptor>(mut client: GeyserGrpcClient<F>) -> anyhow::Re
                                                             let source_bytes: [u8; 64] = notif_tx.signature[..solana_sdk::signature::SIGNATURE_BYTES]
                                                                 .try_into()
                                                                 .unwrap();
-                                                            log::info!("New stake Tx sign:{}", solana_sdk::signature::Signature::from(source_bytes).to_string());
+                                                            log::info!("New stake Tx sign:{} at block slot:{:?} current_slot:{}"
+                                                                , solana_sdk::signature::Signature::from(source_bytes).to_string()
+                                                                , block.slot
+                                                                , current_epoch_state.current_slot.confirmed_slot
+                                                            );
                                                             let program_index = instruction.program_id_index;
                                                             crate::stakestore::process_stake_tx_message(
                                                                 &mut stakestore
