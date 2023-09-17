@@ -292,9 +292,7 @@ async fn run_loop<F: Interceptor>(mut client: GeyserGrpcClient<F>) -> anyhow::Re
                                             //log::trace!("Geyser receive new account");
                                             match account.owner {
                                                 solana_sdk::stake::program::ID => {
-                                                    log::info!("Geyser receive new stake account:{account:?} current_slot:{}"
-                                                        , current_epoch_state.current_slot.confirmed_slot
-                                                    );
+                                                    log::info!("Geyser New stake account:{}", account);
                                                     if let Err(err) = stakestore.add_stake(
                                                         account,
                                                         current_epoch_state.current_epoch_end_slot(),
@@ -451,6 +449,18 @@ impl AccountPretty {
             bail!("Error: read Vote account with empty data");
         }
         Ok(VoteState::deserialize(&self.data)?)
+    }
+}
+
+impl std::fmt::Display for AccountPretty {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{} at slot:{} lpt:{}",
+            self.pubkey.to_string(),
+            self.slot,
+            self.lamports
+        )
     }
 }
 
