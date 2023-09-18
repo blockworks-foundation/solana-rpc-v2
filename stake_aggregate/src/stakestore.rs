@@ -37,7 +37,6 @@ fn stake_map_notify_stake(
     map: &mut StakeMap,
     stake_account: Pubkey,
     stake: StoredStake,
-    //TODO manage already deractivated stake.
     current_epoch: u64,
 ) {
     //don't add stake that are already desactivated.
@@ -46,23 +45,21 @@ fn stake_map_notify_stake(
     // if stake.stake.deactivation_epoch < current_epoch {
     //     return;
     // }
-    log::trace!("stake_map_notify_stake stake:{stake:?}");
-    let remove = match map.entry(stake_account) {
+    log::info!("stake_map_notify_stake stake:{stake:?}");
+    match map.entry(stake_account) {
         // If value already exists, then increment it by one
         std::collections::hash_map::Entry::Occupied(occupied) => {
             let strstake = occupied.into_mut(); // <-- get mut reference to existing value
                                                 //doesn't erase new state with an old one. Can arrive during bootstrapping.
                                                 //several instructions can be done in the same slot.
             if strstake.last_update_slot <= stake.last_update_slot {
-                if stake.is_inserted(current_epoch) {
+                if stake.is_removed(current_epoch) {
+                    log::info!("stake_map_notify_stake Stake store insert stake: {stake_account} stake:{stake:?}");
+                    map.remove(&stake_account);
+                } else {
                     log::info!("stake_map_notify_stake Stake store updated stake: {stake_account} old_stake:{strstake:?} stake:{stake:?}");
                     *strstake = stake;
-                    false
-                } else {
-                    true
                 }
-            } else {
-                false
             }
         }
         // If value doesn't exist yet, then insert a new value of 1
@@ -71,13 +68,8 @@ fn stake_map_notify_stake(
                 log::info!("stake_map_notify_stake Stake store insert stake: {stake_account} stake:{stake:?}");
                 vacant.insert(stake);
             }
-            false
         }
     };
-    if remove {
-        log::info!("stake_map_notify_stake Stake store remove stake: {stake_account}");
-        map.remove(&stake_account);
-    }
 }
 
 #[derive(Debug, Default)]
@@ -101,24 +93,15 @@ pub struct StoredStake {
 }
 
 impl StoredStake {
+    fn is_removed(&self, current_epoch: u64) -> bool {
+        self.stake.activation_epoch != crate::leader_schedule::MAX_EPOCH_VALUE
+            && self.stake.deactivation_epoch < current_epoch
+    }
     fn is_inserted(&self, current_epoch: u64) -> bool {
-        if self.stake.deactivation_epoch == crate::leader_schedule::MAX_EPOCH_VALUE {
-            true
-        } else if self.stake.activation_epoch == crate::leader_schedule::MAX_EPOCH_VALUE {
-            //some stake has activeate_epock = max epoch are taken into account even if deactivation_epoch is past.
-            log::info!(
-                "Stake with stake.activation_epoch == MAX_EPOCH_VALUE, account:{}",
-                self.pubkey
-            );
-            true
-        } else if self.stake.deactivation_epoch < current_epoch {
-            false
-        } else {
-            true
-        }
+        self.stake.activation_epoch == crate::leader_schedule::MAX_EPOCH_VALUE
+            || self.stake.deactivation_epoch >= current_epoch
     }
 }
-
 #[derive(Debug, Default)]
 pub struct StakeStore {
     stakes: StakeMap,
@@ -143,7 +126,7 @@ impl StakeStore {
         self.stakes.clone()
     }
 
-    pub fn notify_change_stake(
+    pub fn notify_stake_change(
         &mut self,
         new_account: AccountPretty,
         current_end_epoch_slot: Slot,
@@ -172,6 +155,11 @@ impl StakeStore {
                 }),
                 true => self.notify_stake(new_account.pubkey, ststake, current_epoch),
             }
+        } else {
+            log::warn!(
+                "notify_stake_change {} No delegated stake in account data",
+                new_account.pubkey
+            );
         }
 
         Ok(())

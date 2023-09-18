@@ -298,7 +298,7 @@ async fn run_loop<F: Interceptor>(mut client: GeyserGrpcClient<F>) -> anyhow::Re
                                             match account.owner {
                                                 solana_sdk::stake::program::ID => {
                                                     log::info!("Geyser Notif stake account:{}", account);
-                                                    if let Err(err) = stakestore.notify_change_stake(
+                                                    if let Err(err) = stakestore.notify_stake_change(
                                                         account,
                                                         current_epoch_state.current_epoch_end_slot(),
                                                         current_epoch_state.current_epoch.epoch,
