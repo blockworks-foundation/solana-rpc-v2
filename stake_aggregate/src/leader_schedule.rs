@@ -368,7 +368,7 @@ pub fn build_current_stakes(
     //log::trace!("get_program_accounts:{:?}", response);
     //use btreemap to always sort the same way.
     let mut stakes_aggregated = BTreeMap::<String, (u64, u64)>::new();
-    let mut rpc_stakes = BTreeMap::<String, Vec<solana_sdk::stake::state::Delegation>>::new();
+    let mut rpc_stakes = BTreeMap::<String, Vec<(String, u64, u64, u64)>>::new();
     for (pubkey, account) in response {
         // Zero-length accounts owned by the stake program are system accounts that were re-assigned and are to be
         // ignored
@@ -386,18 +386,25 @@ pub fn build_current_stakes(
                         .entry(stake.delegation.voter_pubkey.to_string())
                         .or_insert((0, 0)))
                     .0 += stake.delegation.stake;
+                    let st_list = rpc_stakes
+                        .entry(stake.delegation.voter_pubkey.to_string())
+                        .or_insert(vec![]);
+                    st_list.push((
+                        pubkey.to_string(),
+                        stake.delegation.stake,
+                        stake.delegation.activation_epoch,
+                        stake.delegation.deactivation_epoch,
+                    ));
                 }
-                let st_list = rpc_stakes.entry(pubkey.to_string()).or_insert(vec![]);
-                st_list.push(stake.delegation);
             }
             _ => (),
         }
     }
-    let mut local_stakes = BTreeMap::<String, Vec<solana_sdk::stake::state::Delegation>>::new();
+    let mut local_stakes = BTreeMap::<String, Vec<(String, u64, u64, u64)>>::new();
     stake_map
         .iter()
         .filter(|(pubkey, stake)| is_stake_to_add(**pubkey, &stake.stake, current_epoch_info))
-        .for_each(|(_, stake)| {
+        .for_each(|(pubkey, stake)| {
             // log::trace!(
             //     "LCOAL Stake {pubkey} account:{:?} stake:{stake:?}",
             //     stake.stake.voter_pubkey
@@ -409,7 +416,12 @@ pub fn build_current_stakes(
             let st_list = local_stakes
                 .entry(stake.stake.voter_pubkey.to_string().to_string())
                 .or_insert(vec![]);
-            st_list.push(stake.stake);
+            st_list.push((
+                pubkey.to_string(),
+                stake.stake.stake,
+                stake.stake.activation_epoch,
+                stake.stake.deactivation_epoch,
+            ));
         });
 
     //verify the list
@@ -424,12 +436,7 @@ pub fn build_current_stakes(
             diff_list
         );
         //Print all associated stakes
-        let rpc_diff_list: Vec<(
-            &String,
-            u64,
-            u64,
-            &Vec<solana_sdk::stake::state::Delegation>,
-        )> = diff_list
+        let rpc_diff_list: Vec<(&String, u64, u64, &Vec<(String, u64, u64, u64)>)> = diff_list
             .iter()
             .filter_map(|(pk, (rpc, local))| {
                 rpc_stakes
@@ -437,12 +444,7 @@ pub fn build_current_stakes(
                     .map(|acc_list| ((pk, *rpc, *local, acc_list)))
             })
             .collect();
-        let local_diff_list: Vec<(
-            &String,
-            u64,
-            u64,
-            &Vec<solana_sdk::stake::state::Delegation>,
-        )> = diff_list
+        let local_diff_list: Vec<(&String, u64, u64, &Vec<(String, u64, u64, u64)>)> = diff_list
             .iter()
             .filter_map(|(pk, (rpc, local))| {
                 local_stakes
