@@ -72,6 +72,7 @@ enum LeaderScheduleResult {
     End(Option<LeaderSchedule>, EpochInfo),
 }
 
+//TODO remove desactivated account after leader schedule calculus.
 fn process_leadershedule_event(
     event: LeaderScheduleEvent,
     stakestore: &mut StakeStore,

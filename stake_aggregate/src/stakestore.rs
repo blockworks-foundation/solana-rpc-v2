@@ -54,7 +54,7 @@ fn stake_map_notify_stake(
                                                 //doesn't erase new state with an old one. Can arrive during bootstrapping.
                                                 //several instructions can be done in the same slot.
             if strstake.last_update_slot <= stake.last_update_slot {
-                if stake.is_activated(current_epoch) {
+                if stake.is_inserted(current_epoch) {
                     log::info!("stake_map_notify_stake Stake store updated stake: {stake_account} old_stake:{strstake:?} stake:{stake:?}");
                     *strstake = stake;
                     false
@@ -67,7 +67,7 @@ fn stake_map_notify_stake(
         }
         // If value doesn't exist yet, then insert a new value of 1
         std::collections::hash_map::Entry::Vacant(vacant) => {
-            if stake.is_activated(current_epoch) {
+            if stake.is_inserted(current_epoch) {
                 log::info!("stake_map_notify_stake Stake store insert stake: {stake_account} stake:{stake:?}");
                 vacant.insert(stake);
             }
@@ -101,7 +101,7 @@ pub struct StoredStake {
 }
 
 impl StoredStake {
-    fn is_activated(&self, current_epoch: u64) -> bool {
+    fn is_inserted(&self, current_epoch: u64) -> bool {
         if self.stake.deactivation_epoch == crate::leader_schedule::MAX_EPOCH_VALUE {
             true
         } else if self.stake.activation_epoch == crate::leader_schedule::MAX_EPOCH_VALUE {
@@ -112,8 +112,6 @@ impl StoredStake {
             );
             true
         } else if self.stake.deactivation_epoch < current_epoch {
-            false
-        } else if self.stake.activation_epoch > current_epoch {
             false
         } else {
             true
