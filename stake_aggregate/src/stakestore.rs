@@ -46,6 +46,7 @@ fn stake_map_notify_stake(
     // if stake.stake.deactivation_epoch < current_epoch {
     //     return;
     // }
+    log::info!("stake_map_notify_stake stake:{stake:?}");
     let remove = match map.entry(stake_account) {
         // If value already exists, then increment it by one
         std::collections::hash_map::Entry::Occupied(occupied) => {
@@ -54,7 +55,7 @@ fn stake_map_notify_stake(
                                                 //several instructions can be done in the same slot.
             if strstake.last_update_slot <= stake.last_update_slot {
                 if stake.is_activated(current_epoch) {
-                    log::info!("Stake store updated stake: {stake_account} old_stake:{strstake:?} stake:{stake:?}");
+                    log::info!("stake_map_notify_stake Stake store updated stake: {stake_account} old_stake:{strstake:?} stake:{stake:?}");
                     *strstake = stake;
                     false
                 } else {
@@ -67,14 +68,14 @@ fn stake_map_notify_stake(
         // If value doesn't exist yet, then insert a new value of 1
         std::collections::hash_map::Entry::Vacant(vacant) => {
             if stake.is_activated(current_epoch) {
-                log::info!("Stake store insert stake: {stake_account} stake:{stake:?}");
+                log::info!("stake_map_notify_stake Stake store insert stake: {stake_account} stake:{stake:?}");
                 vacant.insert(stake);
             }
             false
         }
     };
     if remove {
-        log::info!("Stake store remove stake: {stake_account}");
+        log::info!("stake_map_notify_stake Stake store remove stake: {stake_account}");
         map.remove(&stake_account);
     }
 }
