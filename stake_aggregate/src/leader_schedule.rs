@@ -14,7 +14,7 @@ use std::collections::HashMap;
 use std::time::Duration;
 use tokio::task::JoinHandle;
 
-const MAX_EPOCH_VALUE: u64 = 18446744073709551615;
+pub const MAX_EPOCH_VALUE: u64 = 18446744073709551615;
 
 /*
 Leader schedule calculus state diagram
