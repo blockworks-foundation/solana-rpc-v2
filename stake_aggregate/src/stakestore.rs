@@ -111,7 +111,7 @@ impl StoredStake {
                 self.pubkey
             );
             true
-        } else if self.stake.deactivation_epoch <= current_epoch {
+        } else if self.stake.deactivation_epoch < current_epoch {
             false
         } else if self.stake.activation_epoch > current_epoch {
             false
