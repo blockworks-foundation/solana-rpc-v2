@@ -201,6 +201,11 @@ async fn run_loop<F: Interceptor>(mut client: GeyserGrpcClient<F>) -> anyhow::Re
     let jh = tokio::spawn(async move { BootstrapEvent::InitBootstrap });
     spawned_bootstrap_task.push(jh);
 
+    //For DEBUG TODO remove:
+    //start stake verification loop
+    let mut stake_verification_sender =
+        crate::stakestore::start_stake_verification_loop(RPC_URL.to_string()).await;
+
     loop {
         tokio::select! {
             Some(req) = request_rx.recv() => {
@@ -366,11 +371,12 @@ async fn run_loop<F: Interceptor>(mut client: GeyserGrpcClient<F>) -> anyhow::Re
                                                             );
                                                             let program_index = instruction.program_id_index;
                                                             crate::stakestore::process_stake_tx_message(
+                                                                &mut stake_verification_sender,
                                                                 &mut stakestore
                                                                 , &message.account_keys
                                                                 , instruction
                                                                 , program_index
-                                                            );
+                                                            ).await;
                                                         }
                                                     }
                                                 }
