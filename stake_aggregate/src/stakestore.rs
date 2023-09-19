@@ -45,7 +45,7 @@ fn stake_map_notify_stake(
     // if stake.stake.deactivation_epoch < current_epoch {
     //     return;
     // }
-    log::info!("stake_map_notify_stake stake:{stake:?}");
+    log::trace!("stake_map_notify_stake stake:{stake:?}");
     match map.entry(stake_account) {
         // If value already exists, then increment it by one
         std::collections::hash_map::Entry::Occupied(occupied) => {
@@ -155,11 +155,6 @@ impl StakeStore {
                 }),
                 true => self.notify_stake(new_account.pubkey, ststake, current_epoch),
             }
-        } else {
-            log::warn!(
-                "notify_stake_change {} No delegated stake in account data",
-                new_account.pubkey
-            );
         }
 
         Ok(())
@@ -263,9 +258,8 @@ pub fn read_stake_from_account_data(mut data: &[u8]) -> anyhow::Result<Option<De
     match BorshDeserialize::deserialize(&mut data)? {
         StakeState::Stake(_, stake) => Ok(Some(stake.delegation)),
         StakeState::Initialized(_) => Ok(None),
-        other => {
-            bail!("read stake from account not a stake account. read:{other:?}");
-        }
+        StakeState::Uninitialized => Ok(None),
+        StakeState::RewardsPool => Ok(None),
     }
 }
 
