@@ -376,6 +376,8 @@ async fn run_loop<F: Interceptor>(mut client: GeyserGrpcClient<F>) -> anyhow::Re
                                                                 , &message.account_keys
                                                                 , instruction
                                                                 , program_index
+                                                                , block.slot
+                                                                , current_epoch_state.current_epoch_end_slot(),
                                                             ).await;
                                                         }
                                                     }

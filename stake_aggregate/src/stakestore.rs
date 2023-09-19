@@ -33,12 +33,7 @@ pub fn merge_stakestore(
     Ok(())
 }
 
-fn stake_map_notify_stake(
-    map: &mut StakeMap,
-    stake_account: Pubkey,
-    stake: StoredStake,
-    current_epoch: u64,
-) {
+fn stake_map_notify_stake(map: &mut StakeMap, stake: StoredStake, current_epoch: u64) {
     //don't add stake that are already desactivated.
     //there's some stran,ge stake that has activeate_epock = max epoch and desactivate ecpock 90 that are taken into account.
     //Must be better defined.
@@ -46,7 +41,7 @@ fn stake_map_notify_stake(
     //     return;
     // }
     log::info!("stake_map_notify_stake stake:{stake:?}");
-    match map.entry(stake_account) {
+    match map.entry(stake.pubkey) {
         // If value already exists, then increment it by one
         std::collections::hash_map::Entry::Occupied(occupied) => {
             let strstake = occupied.into_mut(); // <-- get mut reference to existing value
@@ -54,10 +49,13 @@ fn stake_map_notify_stake(
                                                 //several instructions can be done in the same slot.
             if strstake.last_update_slot <= stake.last_update_slot {
                 if stake.is_removed(current_epoch) {
-                    log::info!("stake_map_notify_stake Stake store insert stake: {stake_account} stake:{stake:?}");
-                    map.remove(&stake_account);
+                    log::info!(
+                        "stake_map_notify_stake Stake store insert stake: {} stake:{stake:?}",
+                        stake.pubkey
+                    );
+                    map.remove(&stake.pubkey);
                 } else {
-                    log::info!("stake_map_notify_stake Stake store updated stake: {stake_account} old_stake:{strstake:?} stake:{stake:?}");
+                    log::info!("stake_map_notify_stake Stake store updated stake: {} old_stake:{strstake:?} stake:{stake:?}", stake.pubkey);
                     *strstake = stake;
                 }
             }
@@ -65,7 +63,10 @@ fn stake_map_notify_stake(
         // If value doesn't exist yet, then insert a new value of 1
         std::collections::hash_map::Entry::Vacant(vacant) => {
             if stake.is_inserted(current_epoch) {
-                log::info!("stake_map_notify_stake Stake store insert stake: {stake_account} stake:{stake:?}");
+                log::info!(
+                    "stake_map_notify_stake Stake store insert stake: {} stake:{stake:?}",
+                    stake.pubkey
+                );
                 vacant.insert(stake);
             }
         }
@@ -73,14 +74,36 @@ fn stake_map_notify_stake(
 }
 
 #[derive(Debug, Default)]
-enum ExtractedAction {
+pub enum ExtractedAction {
     Notify {
-        stake_account: Pubkey,
         stake: StoredStake,
+        current_epoch: u64,
     },
-    Remove(Pubkey),
+    Remove(Pubkey, Slot),
+    Merge {
+        source_account: Pubkey,
+        destination_account: Pubkey,
+        update_slot: Slot,
+    },
     #[default]
     None,
+}
+
+impl ExtractedAction {
+    fn get_update_slot(&self) -> u64 {
+        match self {
+            ExtractedAction::Notify { stake, .. } => stake.last_update_slot,
+            ExtractedAction::Remove(_, slot) => *slot,
+            ExtractedAction::Merge { update_slot, .. } => *update_slot,
+            ExtractedAction::None => 0,
+        }
+    }
+
+    fn update_epoch(&mut self, epoch: u64) {
+        if let ExtractedAction::Notify { current_epoch, .. } = self {
+            *current_epoch = epoch;
+        }
+    }
 }
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
@@ -137,34 +160,66 @@ impl StakeStore {
         };
 
         if let Some(delegated_stake) = delegated_stake_opt {
-            let ststake = StoredStake {
+            let stake = StoredStake {
                 pubkey: new_account.pubkey,
                 lamports: new_account.lamports,
                 stake: delegated_stake,
                 last_update_slot: new_account.slot,
                 write_version: new_account.write_version,
             };
+
+            self.notify_stake_action(
+                ExtractedAction::Notify {
+                    stake,
+                    current_epoch,
+                },
+                current_end_epoch_slot,
+            );
+
             //during extract push the new update or
             //don't insertnow account change that has been done in next epoch.
             //put in update pool to be merged next epoch change.
-            let insert_stake = !self.extracted || ststake.last_update_slot > current_end_epoch_slot;
-            match insert_stake {
-                false => self.updates.push(ExtractedAction::Notify {
-                    stake_account: new_account.pubkey,
-                    stake: ststake,
-                }),
-                true => self.notify_stake(new_account.pubkey, ststake, current_epoch),
-            }
+            // let insert_stake = !self.extracted || ststake.last_update_slot > current_end_epoch_slot;
+            // match insert_stake {
+            //     false => self.updates.push(ExtractedAction::Notify {
+            //         stake_account: new_account.pubkey,
+            //         stake: ststake,
+            //     }),
+            //     true => self.notify_stake(new_account.pubkey, ststake, current_epoch),
+            // }
         }
 
         Ok(())
     }
+    pub fn notify_stake_action(&mut self, action: ExtractedAction, current_end_epoch_slot: Slot) {
+        //during extract push the new update or
+        //don't insertnow account change that has been done in next epoch.
+        //put in update pool to be merged next epoch change.
+        let insert_stake = !self.extracted || action.get_update_slot() > current_end_epoch_slot;
+        match insert_stake {
+            false => self.updates.push(action),
+            true => self.process_stake_action(action),
+        }
+    }
 
-    pub fn remove_stake(&mut self, account_pk: Pubkey) {
-        match self.extracted {
-            false => self.remove_from_store(&account_pk),
-
-            true => self.updates.push(ExtractedAction::Remove(account_pk)),
+    fn process_stake_action(&mut self, action: ExtractedAction) {
+        match action {
+            ExtractedAction::Notify {
+                stake,
+                current_epoch,
+            } => {
+                stake_map_notify_stake(&mut self.stakes, stake, current_epoch);
+            }
+            ExtractedAction::Remove(account_pk, slot) => self.remove_from_store(&account_pk, slot),
+            ExtractedAction::Merge {
+                source_account,
+                destination_account,
+                update_slot,
+            } => {
+                //TODO
+                ()
+            }
+            ExtractedAction::None => (),
         }
     }
 
@@ -184,7 +239,7 @@ impl StakeStore {
     }
 
     //Merge the stake map an,d replace the current one.
-    fn merge_stakes(self, stakes: StakeMap, current_epoch: u64) -> anyhow::Result<Self> {
+    fn merge_stakes(mut self, stakes: StakeMap, current_epoch: u64) -> anyhow::Result<Self> {
         if !self.extracted {
             bail!("StakeStore merge of non extracted map. Try later");
         }
@@ -194,30 +249,26 @@ impl StakeStore {
             extracted: false,
         };
 
+        self.updates
+            .sort_unstable_by(|a, b| a.get_update_slot().cmp(&b.get_update_slot()));
         //apply stake added during extraction.
-        for action in self.updates {
-            log::info!("merge_stakes update action:{action:?}");
-            match action {
-                ExtractedAction::Notify {
-                    stake_account,
-                    stake,
-                } => {
-                    stakestore.notify_stake(stake_account, stake, current_epoch);
-                }
-                ExtractedAction::Remove(account_pk) => stakestore.remove_from_store(&account_pk),
-
-                ExtractedAction::None => (),
-            };
+        for mut action in self.updates {
+            action.update_epoch(current_epoch);
+            stakestore.process_stake_action(action);
         }
         Ok(stakestore)
     }
 
-    fn remove_from_store(&mut self, account_pk: &Pubkey) {
-        log::info!("remove_from_store for {}", account_pk.to_string());
-        self.stakes.remove(account_pk);
-    }
-    fn notify_stake(&mut self, stake_account: Pubkey, stake: StoredStake, current_epoch: u64) {
-        stake_map_notify_stake(&mut self.stakes, stake_account, stake, current_epoch);
+    fn remove_from_store(&mut self, account_pk: &Pubkey, update_slot: Slot) {
+        if self
+            .stakes
+            .get(account_pk)
+            .map(|stake| stake.last_update_slot <= update_slot)
+            .unwrap_or(true)
+        {
+            log::info!("remove_from_store for {}", account_pk.to_string());
+            self.stakes.remove(account_pk);
+        }
     }
 }
 
@@ -246,7 +297,7 @@ pub fn merge_program_account_in_strake_map(
                 last_update_slot,
                 write_version: 0,
             };
-            stake_map_notify_stake(stake_map, pk, stake, current_epoch);
+            stake_map_notify_stake(stake_map, stake, current_epoch);
         });
 }
 
@@ -337,6 +388,8 @@ pub async fn process_stake_tx_message(
     instruction: CompiledInstruction,
     //for debug and trace purpose.
     program_id_index: u32,
+    tx_slot: Slot,
+    current_end_epoch_slot: u64,
 ) {
     //for tracing purpose
     let account_keys: Vec<Pubkey> = account_keys_vec
@@ -669,7 +722,19 @@ pub async fn process_stake_tx_message(
                 "DETECT MERGE for source account:{}",
                 source_pubkey.to_string()
             );
-            stakestore.remove_stake(source_pubkey);
+
+            stakestore.notify_stake_action(
+                ExtractedAction::Remove(source_pubkey, tx_slot),
+                current_end_epoch_slot,
+            );
+            stakestore.notify_stake_action(
+                ExtractedAction::Merge {
+                    source_account: account_keys[instruction.accounts[1] as usize],
+                    destination_account: account_keys[instruction.accounts[0] as usize],
+                    update_slot: tx_slot,
+                },
+                current_end_epoch_slot,
+            );
 
             send_verification(
                 stake_sender,
