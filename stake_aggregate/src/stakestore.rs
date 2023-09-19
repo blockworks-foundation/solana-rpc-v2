@@ -45,7 +45,7 @@ fn stake_map_notify_stake(
     // if stake.stake.deactivation_epoch < current_epoch {
     //     return;
     // }
-    log::trace!("stake_map_notify_stake stake:{stake:?}");
+    log::info!("stake_map_notify_stake stake:{stake:?}");
     match map.entry(stake_account) {
         // If value already exists, then increment it by one
         std::collections::hash_map::Entry::Occupied(occupied) => {
