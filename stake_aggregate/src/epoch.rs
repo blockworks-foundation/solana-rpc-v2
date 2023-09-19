@@ -2,9 +2,9 @@ use crate::leader_schedule::LeaderScheduleEvent;
 use crate::Slot;
 use solana_client::client_error::ClientError;
 use solana_client::nonblocking::rpc_client::RpcClient;
-use solana_sdk::commitment_config::CommitmentConfig;
+use solana_sdk::commitment_config::{CommitmentConfig, CommitmentLevel};
 use solana_sdk::epoch_info::EpochInfo;
-use yellowstone_grpc_proto::geyser::CommitmentLevel;
+use yellowstone_grpc_proto::geyser::CommitmentLevel as GeyserCommitmentLevel;
 use yellowstone_grpc_proto::prelude::SubscribeUpdateSlot;
 
 #[derive(Debug)]
@@ -38,7 +38,7 @@ impl CurrentEpochSlotState {
         &mut self,
         new_slot: &SubscribeUpdateSlot,
     ) -> Option<LeaderScheduleEvent> {
-        if let CommitmentLevel::Confirmed = new_slot.status() {
+        if let GeyserCommitmentLevel::Confirmed = new_slot.status() {
             //for the first update of slot correct epoch info data.
             if self.current_slot.confirmed_slot == 0 {
                 let diff = new_slot.slot - self.current_epoch.absolute_slot;
@@ -82,7 +82,7 @@ impl CurrentEpochSlotState {
         //update slot state for all commitment.
         self.current_slot.update_slot(&new_slot);
 
-        if let CommitmentLevel::Confirmed = new_slot.status() {
+        if let GeyserCommitmentLevel::Confirmed = new_slot.status() {
             self.manage_change_epoch()
         } else {
             None
@@ -128,6 +128,14 @@ pub struct CurrentSlot {
 }
 
 impl CurrentSlot {
+    pub fn get_slot_with_commitment(&self, commitment: CommitmentConfig) -> Slot {
+        match commitment.commitment {
+            CommitmentLevel::Processed => self.processed_slot,
+            CommitmentLevel::Confirmed => self.confirmed_slot,
+            CommitmentLevel::Finalized => self.finalized_slot,
+        }
+    }
+
     fn update_slot(&mut self, slot: &SubscribeUpdateSlot) {
         let updade = |commitment: &str, current_slot: &mut u64, new_slot: u64| {
             //verify that the slot is consecutif
@@ -142,9 +150,15 @@ impl CurrentSlot {
         };
 
         match slot.status() {
-            CommitmentLevel::Processed => updade("Processed", &mut self.processed_slot, slot.slot),
-            CommitmentLevel::Confirmed => updade("Confirmed", &mut self.confirmed_slot, slot.slot),
-            CommitmentLevel::Finalized => updade("Finalized", &mut self.finalized_slot, slot.slot),
+            GeyserCommitmentLevel::Processed => {
+                updade("Processed", &mut self.processed_slot, slot.slot)
+            }
+            GeyserCommitmentLevel::Confirmed => {
+                updade("Confirmed", &mut self.confirmed_slot, slot.slot)
+            }
+            GeyserCommitmentLevel::Finalized => {
+                updade("Finalized", &mut self.finalized_slot, slot.slot)
+            }
         }
     }
 }

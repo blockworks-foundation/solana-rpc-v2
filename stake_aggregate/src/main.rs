@@ -238,7 +238,8 @@ async fn run_loop<F: Interceptor>(mut client: GeyserGrpcClient<F>) -> anyhow::Re
                             println!("Channel error during sending bacl request status error:{err:?}");
                         }
                         log::info!("RPC bootstrap account send");
-                    }
+                    },
+                    _ => crate::rpc::server_rpc_request(req, &current_epoch_state),
                 }
 
             },
