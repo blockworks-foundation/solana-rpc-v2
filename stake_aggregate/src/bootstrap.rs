@@ -128,7 +128,7 @@ fn process_bootstrap_event(
             }
         }
         BootstrapEvent::StoreExtracted(mut stake_map, mut vote_map, stakes, votes) => {
-            log::trace!("BootstrapEvent::StoreExtracted RECV");
+            log::info!("BootstrapEvent::StoreExtracted RECV");
             //merge new PA with stake map and vote map in a specific task
             let jh = tokio::task::spawn_blocking({
                 let current_epoch = data.current_epoch;
@@ -151,7 +151,7 @@ fn process_bootstrap_event(
             BootsrapProcessResult::TaskHandle(jh)
         }
         BootstrapEvent::AccountsMerged(stake_map, vote_map) => {
-            log::trace!("BootstrapEvent::AccountsMerged RECV");
+            log::info!("BootstrapEvent::AccountsMerged RECV");
             match (
                 merge_stakestore(stakestore, stake_map, data.current_epoch),
                 merge_votestore(votestore, vote_map),

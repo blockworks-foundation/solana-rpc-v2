@@ -103,6 +103,8 @@ impl VoteStore {
             bail!("Can't read Vote from account data");
         };
 
+        log::info!("add_vote {} :{vote_data:?}", new_account.pubkey);
+
         let new_voteacc = StoredVote {
             pubkey: new_account.pubkey,
             vote_data,
@@ -142,7 +144,7 @@ pub fn merge_program_account_in_vote_map(
             },
         )
         .for_each(|(pk, vote)| {
-            //log::info!("Vote notified {pk} :{vote:?}");
+            log::info!("Vote init {pk} :{vote:?}");
             let vote = StoredVote {
                 pubkey: pk,
                 vote_data: vote,
