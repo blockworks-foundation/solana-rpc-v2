@@ -40,7 +40,7 @@ fn stake_map_notify_stake(map: &mut StakeMap, stake: StoredStake, current_epoch:
     // if stake.stake.deactivation_epoch < current_epoch {
     //     return;
     // }
-    log::info!("stake_map_notify_stake stake:{stake:?}");
+    //log::info!("stake_map_notify_stake stake:{stake:?}");
     match map.entry(stake.pubkey) {
         // If value already exists, then increment it by one
         std::collections::hash_map::Entry::Occupied(occupied) => {

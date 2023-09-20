@@ -142,7 +142,7 @@ pub fn merge_program_account_in_vote_map(
             },
         )
         .for_each(|(pk, vote)| {
-            log::info!("Vote notified {pk} :{vote:?}");
+            //log::info!("Vote notified {pk} :{vote:?}");
             let vote = StoredVote {
                 pubkey: pk,
                 vote_data: vote,
