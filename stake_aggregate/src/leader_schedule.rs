@@ -130,7 +130,7 @@ fn process_leadershedule_event(
                 _ => {
                     //this shoud never arrive because the store has been extracted before.
                     //TODO remove this error using type state
-                    log::warn!("LeaderScheduleEvent::MergeStoreAndSaveSchedule merge stake or vote fail,  non extracted stake/vote map err, restart Schedule");
+                    log::warn!("LeaderScheduleEvent::MergeStoreAndSaveSchedule merge stake or vote fail, restart Schedule");
                     LeaderScheduleResult::Event(LeaderScheduleEvent::InitLeaderschedule(
                         schedule_epoch,
                     ))
@@ -151,17 +151,37 @@ fn calculate_leader_schedule_from_stake_map(
         vote_map.len(),
         stake_map.len()
     );
+
+    let ten_epoch_slot_long = 10 * current_epoch_info.slots_in_epoch;
+
     //log::trace!("calculate_leader_schedule_from_stake_map stake_map:{stake_map:?} current_epoch_info:{current_epoch_info:?}");
     for storestake in stake_map.values() {
         //log::info!("Program_accounts stake:{stake:#?}");
         if is_stake_to_add(storestake.pubkey, &storestake.stake, &current_epoch_info) {
             // Add the stake in this stake account to the total for the delegated-to vote account
             //get nodeid for vote account
-            let Some(nodeid) = vote_map.get(&storestake.stake.voter_pubkey).map(|v| v.vote_data.node_pubkey) else {
+            let Some(vote_account) = vote_map.get(&storestake.stake.voter_pubkey) else {
                 log::warn!("Vote account not found in vote map for stake vote account:{}", &storestake.stake.voter_pubkey);
                 continue;
             };
-            *(stakes.entry(nodeid).or_insert(0)) += storestake.stake.stake;
+            //remove vote account that hasn't vote since 10 epoch.
+            //on testnet the vote account CY7gjryUPV6Pwbsn4aArkMBL7HSaRHB8sPZUvhw558Tm node_id:6YpwLjgXcMWAj29govWQr87kaAGKS7CnoqWsEDJE4h8P
+            //hasn't vote since a long time but still return on RPC call get_voteaccounts.
+            //the validator don't use it for leader schedule.
+            if vote_account.vote_data.root_slot.unwrap_or(0)
+                < current_epoch_info
+                    .absolute_slot
+                    .saturating_sub(ten_epoch_slot_long)
+            {
+                log::warn!("Vote account:{} nodeid:{} that hasn't vote since 10 epochs. Remove leader_schedule."
+                    , storestake.stake.voter_pubkey
+                    ,vote_account.vote_data.node_pubkey
+                );
+            } else {
+                *(stakes
+                    .entry(vote_account.vote_data.node_pubkey)
+                    .or_insert(0)) += storestake.stake.stake;
+            }
         }
     }
     calculate_leader_schedule(stakes, current_epoch_info)
@@ -268,23 +288,6 @@ pub fn verify_schedule(schedule: LeaderSchedule, rpc_url: String) -> anyhow::Res
             .push(slot);
     }
 
-    // if let Err(err) = save_schedule_on_file("generated", &input_leader_schedule) {
-    //     log::error!("Error during saving generated schedule:{err}");
-    // }
-
-    //map rpc leader schedule node pubkey to vote account
-    // let mut rpc_leader_schedule: HashMap<String, Vec<usize>> = rpc_leader_schedule.into_iter().filter_map(|(pk, slots)| match node_vote_table.get(&pk) {
-    //         Some(vote_account) => Some((vote_account.clone(),slots)),
-    //         None => {
-    //             log::warn!("verify_schedule RPC get_leader_schedule return some Node account:{pk} that are not mapped by rpc get_vote_accounts");
-    //             None
-    //         },
-    //     }).collect();
-
-    // if let Err(err) = save_schedule_on_file("rpc", &rpc_leader_schedule) {
-    //     log::error!("Error during saving generated schedule:{err}");
-    // } //log::trace!("verify_schedule calculated_leader_schedule:{input_leader_schedule:?} RPC leader schedule:{rpc_leader_schedule:?}");
-
     let mut vote_account_in_error: Vec<String> = input_leader_schedule
         .into_iter()
         .filter_map(|(input_vote_key, mut input_slot_list)| {
@@ -299,7 +302,7 @@ pub fn verify_schedule(schedule: LeaderSchedule, rpc_url: String) -> anyhow::Res
                 .zip(rpc_strake_list.into_iter())
                 .any(|(in_v, rpc)| in_v != rpc)
             {
-                log::trace!("verify_schedule bad slots for {input_vote_key}"); // Caluclated:{input_slot_list:?} rpc:{rpc_strake_list:?}
+                log::trace!("verify_schedule bad slots for {input_vote_key}");
                 Some(input_vote_key)
             } else {
                 None
@@ -361,7 +364,7 @@ pub fn build_current_stakes(
 ) -> BTreeMap<String, (u64, u64)> {
     // Fetch stakes in current epoch
     let rpc_client =
-        RpcClient::new_with_timeout_and_commitment(rpc_url, Duration::from_secs(600), commitment); //CommitmentConfig::confirmed());
+        RpcClient::new_with_timeout_and_commitment(rpc_url, Duration::from_secs(600), commitment);
     let response = rpc_client
         .get_program_accounts(&solana_sdk::stake::program::id())
         .unwrap();
