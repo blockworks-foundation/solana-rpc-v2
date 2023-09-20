@@ -131,20 +131,19 @@ fn process_bootstrap_event(
             log::trace!("BootstrapEvent::StoreExtracted RECV");
             //merge new PA with stake map and vote map in a specific task
             let jh = tokio::task::spawn_blocking({
-                let next_epoch_start_slot = data.next_epoch_start_slot;
                 let current_epoch = data.current_epoch;
                 move || {
                     //update pa_list to set slot update to start epoq one.
                     crate::stakestore::merge_program_account_in_strake_map(
                         &mut stake_map,
                         stakes,
-                        next_epoch_start_slot,
+                        0, //with RPC no way to know the slot of the account update. Set to 0.
                         current_epoch,
                     );
                     crate::votestore::merge_program_account_in_vote_map(
                         &mut vote_map,
                         votes,
-                        next_epoch_start_slot,
+                        0, //with RPC no way to know the slot of the account update. Set to 0.
                     );
                     BootstrapEvent::AccountsMerged(stake_map, vote_map)
                 }

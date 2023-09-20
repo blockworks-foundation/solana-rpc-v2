@@ -133,6 +133,13 @@ impl CurrentSlot {
             CommitmentLevel::Processed => self.processed_slot,
             CommitmentLevel::Confirmed => self.confirmed_slot,
             CommitmentLevel::Finalized => self.finalized_slot,
+            _ => {
+                log::error!(
+                    "get_slot_with_commitment, Bad commitment specified:{}",
+                    commitment.commitment
+                );
+                0
+            }
         }
     }
 
