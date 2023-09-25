@@ -211,10 +211,11 @@ impl StakeStore {
                 stake_map_notify_stake(&mut self.stakes, stake, current_epoch);
             }
             ExtractedAction::Remove(account_pk, slot) => self.remove_from_store(&account_pk, slot),
+            //not use currently. TODO remove.
             ExtractedAction::Merge {
-                source_account,
-                destination_account,
-                update_slot,
+                source_account: _,
+                destination_account: _,
+                update_slot: _,
             } => {
                 //TODO
                 ()
@@ -413,8 +414,11 @@ pub async fn process_stake_tx_message(
         "Before read instruction of program_id_index:{}",
         instruction.program_id_index
     );
-    let Ok(stake_inst)  = bincode::deserialize::<StakeInstruction>(&instruction.data) else {
-        log::info!("Error during stake instruction decoding  :{:?}", &instruction.data);
+    let Ok(stake_inst) = bincode::deserialize::<StakeInstruction>(&instruction.data) else {
+        log::info!(
+            "Error during stake instruction decoding  :{:?}",
+            &instruction.data
+        );
         return;
     };
     match stake_inst {

@@ -11,6 +11,10 @@ path = "bin/readsa.rs"
 name = "parsestake"
 path = "bin/parse_validator_stake.rs"
 
+[[bin]]
+name = "readstakes"
+path = "bin/read_stake_export.rs"
+
 
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html

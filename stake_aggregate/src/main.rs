@@ -11,14 +11,14 @@
   }
 '
 
- curl http://localhost:3000 -X POST -H "Content-Type: application/json" -d '
+curl http://localhost:3000 -X POST -H "Content-Type: application/json" -d '
   {
     "jsonrpc": "2.0",
     "id" : 1,
     "method": "bootstrap_accounts",
     "params": []
   }
-' -o extract_stake2.json
+' -o extract_stake_529_end.json
 */
 
 //TODO: add stake verify that it' not already desactivated.
@@ -57,7 +57,8 @@ mod votestore;
 
 type Slot = u64;
 
-//WebSocket URL: ws://localhost:8900/ (computed)
+const CURRENT_SCHEDULE_VOTE_STAKES_FILE: &str = "current_vote_stakes.json";
+const NEXT_SCHEDULE_VOTE_STAKES_FILE: &str = "next_vote_stakes.json";
 
 const GRPC_URL: &str = "http://localhost:10000";
 const RPC_URL: &str = "http://localhost:8899";
@@ -68,6 +69,20 @@ const RPC_URL: &str = "http://localhost:8899";
 
 const STAKESTORE_INITIAL_CAPACITY: usize = 600000;
 const VOTESTORE_INITIAL_CAPACITY: usize = 600000;
+
+/*
+TODO:
+ * load current and next epoch  vote stake list
+ * calculate schedule for the 2 epoch
+ * save new schedule in next epoch.
+ * schedule cycle:
+  - current: loaded start
+  - next: loaded start
+  - new epoch:
+    - calculate schedule
+    - next -> current
+    - new -> next
+*/
 
 pub fn log_end_epoch(
     current_slot: Slot,
@@ -122,10 +137,11 @@ async fn run_loop<F: Interceptor>(mut client: GeyserGrpcClient<F>) -> anyhow::Re
     let mut votestore = VoteStore::new(VOTESTORE_INITIAL_CAPACITY);
 
     //leader schedule
-    let mut current_leader_schedule = LeaderScheduleData {
-        leader_schedule: None,
-        schedule_epoch: current_epoch_state.current_epoch.clone(),
-    };
+    let mut leader_schedule_data = crate::leader_schedule::bootstrap_leader_schedule(
+        CURRENT_SCHEDULE_VOTE_STAKES_FILE,
+        NEXT_SCHEDULE_VOTE_STAKES_FILE,
+        current_epoch_state.current_epoch.slots_in_epoch,
+    )?;
 
     //future execution collection.
     let mut spawned_bootstrap_task = FuturesUnordered::new();
@@ -262,22 +278,35 @@ async fn run_loop<F: Interceptor>(mut client: GeyserGrpcClient<F>) -> anyhow::Re
                     &mut stakestore,
                     &mut votestore,
                 ) {
-                    //current_leader_schedule.leader_schedule = new_schedule;
-                    current_leader_schedule.schedule_epoch = epoch;
+
+                    leader_schedule_data.current = leader_schedule_data.next.take();
+                    match new_schedule {
+                        Ok((new_schedule, new_stakes)) => {
+                            leader_schedule_data.next = Some(LeaderScheduleData {
+                                                schedule: new_schedule,
+                                                vote_stakes: new_stakes,
+                                                epoch: epoch.epoch,
+                                            });
+                                        },
+                        Err(err) => {
+                            log::error!("Error during new leader schedule generation:{err}");
+                            log::error!("No leader schedule available for next epoch.");
+                        }
+                    }
 
                     //TODO remove verification when schedule ok.
                     //verify calculated shedule with the one the RPC return.
-                    if let Some(schedule) = new_schedule {
-                        tokio::task::spawn_blocking(|| {
-                            //10 second that the schedule has been calculated on the validator
-                            std::thread::sleep(std::time::Duration::from_secs(5));
-                            log::info!("Start Verify schedule");
-                            if let Err(err) = crate::leader_schedule::verify_schedule(schedule,RPC_URL.to_string()) {
-                                log::warn!("Error during schedule verification:{err}");
-                            }
-                            log::info!("End Verify schedule");
-                        });
-                    }
+                    // if let Some(schedule) = new_schedule {
+                    //     tokio::task::spawn_blocking(|| {
+                    //         //10 second that the schedule has been calculated on the validator
+                    //         std::thread::sleep(std::time::Duration::from_secs(5));
+                    //         log::info!("Start Verify schedule");
+                    //         if let Err(err) = crate::leader_schedule::verify_schedule(schedule,RPC_URL.to_string()) {
+                    //             log::warn!("Error during schedule verification:{err}");
+                    //         }
+                    //         log::info!("End Verify schedule");
+                    //     });
+                    // }
 
                 }
 
@@ -478,9 +507,9 @@ fn read_account(
     current_slot: u64,
 ) -> Option<AccountPretty> {
     let Some(inner_account) = geyser_account.account else {
-            log::warn!("Receive a SubscribeUpdateAccount without account.");
-            return None;
-        };
+        log::warn!("Receive a SubscribeUpdateAccount without account.");
+        return None;
+    };
 
     if geyser_account.slot != current_slot {
         log::trace!(

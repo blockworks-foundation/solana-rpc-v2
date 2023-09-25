@@ -2,6 +2,7 @@ use crate::stakestore::{extract_stakestore, merge_stakestore, StakeMap, StakeSto
 use crate::votestore::{extract_votestore, merge_votestore, VoteMap, VoteStore};
 use anyhow::bail;
 use futures::stream::FuturesUnordered;
+use serde::{Deserialize, Serialize};
 use solana_client::rpc_client::RpcClient;
 use solana_ledger::leader_schedule::LeaderSchedule;
 use solana_sdk::clock::NUM_CONSECUTIVE_LEADER_SLOTS;
@@ -11,10 +12,111 @@ use solana_sdk::pubkey::Pubkey;
 use solana_sdk::stake::state::Delegation;
 use std::collections::BTreeMap;
 use std::collections::HashMap;
+use std::fs::File;
+use std::io::Write;
+use std::str::FromStr;
 use std::time::Duration;
+use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::task::JoinHandle;
 
+const SCHEDULE_STAKE_BASE_FILE_NAME: &str = "aggregate_export_votestake_";
+
 pub const MAX_EPOCH_VALUE: u64 = 18446744073709551615;
+
+pub struct CalculatedSchedule {
+    pub current: Option<LeaderScheduleData>,
+    pub next: Option<LeaderScheduleData>,
+}
+
+pub struct LeaderScheduleData {
+    pub schedule: LeaderSchedule,
+    pub vote_stakes: Vec<(Pubkey, u64)>,
+    pub epoch: u64,
+}
+
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+pub struct EpochStake {
+    epoch: u64,
+    stakes: Vec<(Pubkey, u64)>,
+}
+
+impl From<SavedStake> for EpochStake {
+    fn from(saved_stakes: SavedStake) -> Self {
+        EpochStake {
+            epoch: saved_stakes.epoch,
+            stakes: saved_stakes
+                .stakes
+                .into_iter()
+                .map(|(pk, st)| (Pubkey::from_str(&pk).unwrap(), st))
+                .collect(),
+        }
+    }
+}
+
+pub fn bootstrap_leader_schedule(
+    current_file_patch: &str,
+    next_file_patch: &str,
+    slots_in_epoch: u64,
+) -> anyhow::Result<CalculatedSchedule> {
+    let mut current_stakes = read_schedule_vote_stakes(current_file_patch)?;
+    let mut next_stakes = read_schedule_vote_stakes(next_file_patch)?;
+
+    //calcualte leader schedule for all vote stakes.
+    let current_schedule = calculate_leader_schedule(
+        &mut current_stakes.stakes,
+        current_stakes.epoch,
+        slots_in_epoch,
+    )?;
+    let next_schedule =
+        calculate_leader_schedule(&mut next_stakes.stakes, next_stakes.epoch, slots_in_epoch)?;
+
+    Ok(CalculatedSchedule {
+        current: Some(LeaderScheduleData {
+            schedule: current_schedule,
+            vote_stakes: current_stakes.stakes,
+            epoch: current_stakes.epoch,
+        }),
+        next: Some(LeaderScheduleData {
+            schedule: next_schedule,
+            vote_stakes: next_stakes.stakes,
+            epoch: next_stakes.epoch,
+        }),
+    })
+}
+
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+struct SavedStake {
+    epoch: u64,
+    stakes: Vec<(String, u64)>,
+}
+
+fn read_schedule_vote_stakes(file_path: &str) -> anyhow::Result<EpochStake> {
+    let content = std::fs::read_to_string(file_path)?;
+    let stakes_str: SavedStake = serde_json::from_str(&content)?;
+    //convert to EpochStake because json hashmap parser can only have String key.
+    Ok(stakes_str.into())
+}
+
+fn save_schedule_vote_stakes(
+    base_file_path: &str,
+    stakes: &Vec<(Pubkey, u64)>,
+    epoch: u64,
+) -> anyhow::Result<()> {
+    //save new schedule for restart.
+    let filename = format!("{base_file_path}_{epoch}.json",);
+    let save_stakes = SavedStake {
+        epoch,
+        stakes: stakes
+            .iter()
+            .map(|(pk, st)| (pk.to_string(), *st))
+            .collect(),
+    };
+    let serialized_stakes = serde_json::to_string(&save_stakes).unwrap();
+    let mut file = File::create(filename).unwrap();
+    file.write_all(serialized_stakes.as_bytes()).unwrap();
+    file.flush().unwrap();
+    Ok(())
+}
 
 /*
 Leader schedule calculus state diagram
@@ -41,7 +143,10 @@ pub fn run_leader_schedule_events(
     bootstrap_tasks: &mut FuturesUnordered<JoinHandle<LeaderScheduleEvent>>,
     stakestore: &mut StakeStore,
     votestore: &mut VoteStore,
-) -> Option<(Option<LeaderSchedule>, EpochInfo)> {
+) -> Option<(
+    anyhow::Result<(LeaderSchedule, Vec<(Pubkey, u64)>)>,
+    EpochInfo,
+)> {
     let result = process_leadershedule_event(event, stakestore, votestore);
     match result {
         LeaderScheduleResult::TaskHandle(jh) => {
@@ -55,21 +160,24 @@ pub fn run_leader_schedule_events(
     }
 }
 
-pub struct LeaderScheduleData {
-    pub leader_schedule: Option<LeaderSchedule>,
-    pub schedule_epoch: EpochInfo,
-}
-
 pub enum LeaderScheduleEvent {
     InitLeaderschedule(EpochInfo),
     CalculateScedule(StakeMap, VoteMap, EpochInfo),
-    MergeStoreAndSaveSchedule(StakeMap, VoteMap, Option<LeaderSchedule>, EpochInfo),
+    MergeStoreAndSaveSchedule(
+        StakeMap,
+        VoteMap,
+        anyhow::Result<(LeaderSchedule, Vec<(Pubkey, u64)>)>,
+        EpochInfo,
+    ),
 }
 
 enum LeaderScheduleResult {
     TaskHandle(JoinHandle<LeaderScheduleEvent>),
     Event(LeaderScheduleEvent),
-    End(Option<LeaderSchedule>, EpochInfo),
+    End(
+        anyhow::Result<(LeaderSchedule, Vec<(Pubkey, u64)>)>,
+        EpochInfo,
+    ),
 }
 
 //TODO remove desactivated account after leader schedule calculus.
@@ -99,16 +207,31 @@ fn process_leadershedule_event(
             log::info!("LeaderScheduleEvent::CalculateScedule RECV");
             let jh = tokio::task::spawn_blocking({
                 move || {
-                    let schedule = crate::leader_schedule::calculate_leader_schedule_from_stake_map(
-                        &stake_map,
-                        &vote_map,
-                        &schedule_epoch,
-                    );
+                    let schedule_and_stakes =
+                        crate::leader_schedule::calculate_leader_schedule_from_stake_map(
+                            &stake_map,
+                            &vote_map,
+                            &schedule_epoch,
+                        );
+                    if let Ok((_, vote_stakes)) = &schedule_and_stakes {
+                        let filename = format!(
+                            "{SCHEDULE_STAKE_BASE_FILE_NAME}_{}.json",
+                            schedule_epoch.epoch
+                        );
+                        if let Err(err) =
+                            save_schedule_vote_stakes(&filename, vote_stakes, schedule_epoch.epoch)
+                        {
+                            log::error!(
+                                "Error during new schedule of epoch:{} saving in file:{filename} error:{err}",
+                                schedule_epoch.epoch
+                            );
+                        }
+                    }
                     log::info!("End calculate leader schedule");
                     LeaderScheduleEvent::MergeStoreAndSaveSchedule(
                         stake_map,
                         vote_map,
-                        schedule.ok(),
+                        schedule_and_stakes,
                         schedule_epoch,
                     )
                 }
@@ -130,7 +253,7 @@ fn process_leadershedule_event(
                 _ => {
                     //this shoud never arrive because the store has been extracted before.
                     //TODO remove this error using type state
-                    log::warn!("LeaderScheduleEvent::MergeStoreAndSaveSchedule merge stake or vote fail, restart Schedule");
+                    log::warn!("LeaderScheduleEvent::MergeStoreAndSaveSchedule merge stake or vote fail, -restart Schedule");
                     LeaderScheduleResult::Event(LeaderScheduleEvent::InitLeaderschedule(
                         schedule_epoch,
                     ))
@@ -144,7 +267,7 @@ fn calculate_leader_schedule_from_stake_map(
     stake_map: &crate::stakestore::StakeMap,
     vote_map: &crate::votestore::VoteMap,
     current_epoch_info: &EpochInfo,
-) -> anyhow::Result<LeaderSchedule> {
+) -> anyhow::Result<(LeaderSchedule, Vec<(Pubkey, u64)>)> {
     let mut stakes = HashMap::<Pubkey, u64>::new();
     log::trace!(
         "calculate_leader_schedule_from_stake_map vote map len:{} stake map len:{}",
@@ -161,7 +284,10 @@ fn calculate_leader_schedule_from_stake_map(
             // Add the stake in this stake account to the total for the delegated-to vote account
             //get nodeid for vote account
             let Some(vote_account) = vote_map.get(&storestake.stake.voter_pubkey) else {
-                log::warn!("Vote account not found in vote map for stake vote account:{}", &storestake.stake.voter_pubkey);
+                log::warn!(
+                    "Vote account not found in vote map for stake vote account:{}",
+                    &storestake.stake.voter_pubkey
+                );
                 continue;
             };
             //remove vote account that hasn't vote since 10 epoch.
@@ -184,7 +310,16 @@ fn calculate_leader_schedule_from_stake_map(
             }
         }
     }
-    calculate_leader_schedule(stakes, current_epoch_info)
+
+    let mut schedule_stakes: Vec<(Pubkey, u64)> = vec![];
+    schedule_stakes.extend(stakes.drain());
+
+    let leader_schedule = calculate_leader_schedule(
+        &mut schedule_stakes,
+        current_epoch_info.epoch,
+        current_epoch_info.slots_in_epoch,
+    )?;
+    Ok((leader_schedule, schedule_stakes))
 }
 
 fn is_stake_to_add(
@@ -216,24 +351,21 @@ fn is_stake_to_add(
 //Copied from leader_schedule_utils.rs
 // Mostly cribbed from leader_schedule_utils
 fn calculate_leader_schedule(
-    stakes: HashMap<Pubkey, u64>,
-    current_epoch_info: &EpochInfo,
+    stakes: &mut Vec<(Pubkey, u64)>,
+    epoch: u64,
+    slots_in_epoch: u64,
 ) -> anyhow::Result<LeaderSchedule> {
     if stakes.is_empty() {
         bail!("calculate_leader_schedule stakes list is empty. no schedule can be calculated.");
     }
     let mut seed = [0u8; 32];
-    seed[0..8].copy_from_slice(&current_epoch_info.epoch.to_le_bytes());
-    let mut stakes: Vec<_> = stakes
-        .iter()
-        .map(|(pubkey, stake)| (*pubkey, *stake))
-        .collect();
-    sort_stakes(&mut stakes);
-    log::info!("calculate_leader_schedule stakes:{stakes:?} epoch:{current_epoch_info:?}");
+    seed[0..8].copy_from_slice(&epoch.to_le_bytes());
+    sort_stakes(stakes);
+    log::info!("calculate_leader_schedule stakes:{stakes:?} epoch:{epoch:?}");
     Ok(LeaderSchedule::new(
         &stakes,
         seed,
-        current_epoch_info.slots_in_epoch,
+        slots_in_epoch,
         NUM_CONSECUTIVE_LEADER_SLOTS,
     ))
 }
@@ -324,10 +456,6 @@ pub fn verify_schedule(schedule: LeaderSchedule, rpc_url: String) -> anyhow::Res
     Ok(())
 }
 
-use std::fs::File;
-use std::io::Write;
-use std::time::{SystemTime, UNIX_EPOCH};
-
 pub fn save_schedule_on_file<T: serde::Serialize>(
     name: &str,
     map: &BTreeMap<String, T>,
@@ -380,7 +508,7 @@ pub fn build_current_stakes(
             continue;
         }
 
-        match StakeState::deserialize(&mut account.data.as_slice()).unwrap() {
+        match BorshDeserialize::deserialize(&mut account.data.as_slice()).unwrap() {
             StakeState::Stake(_, stake) => {
                 //vote account version
                 if is_stake_to_add(pubkey, &stake.delegation, current_epoch_info) {
