@@ -43,7 +43,7 @@ pub fn run_bootstrap_events(
     bootstrap_tasks: &mut FuturesUnordered<JoinHandle<BootstrapEvent>>,
     stakestore: &mut StakeStore,
     votestore: &mut VoteStore,
-    data: &BootstrapData,
+    data: &mut BootstrapData,
 ) {
     let result = process_bootstrap_event(event, stakestore, votestore, data);
     match result {
@@ -51,16 +51,21 @@ pub fn run_bootstrap_events(
         BootsrapProcessResult::Event(event) => {
             run_bootstrap_events(event, bootstrap_tasks, stakestore, votestore, data)
         }
-        BootsrapProcessResult::End => (),
+        BootsrapProcessResult::End => data.done = true,
     }
 }
 
 pub enum BootstrapEvent {
     InitBootstrap,
-    BootstrapAccountsFetched(Vec<(Pubkey, Account)>, Vec<(Pubkey, Account)>),
+    BootstrapAccountsFetched(
+        Vec<(Pubkey, Account)>,
+        Vec<(Pubkey, Account)>,
+        Vec<(Pubkey, Account)>,
+    ),
     StoreExtracted(
         StakeMap,
         VoteMap,
+        Vec<(Pubkey, Account)>,
         Vec<(Pubkey, Account)>,
         Vec<(Pubkey, Account)>,
     ),
@@ -75,6 +80,7 @@ enum BootsrapProcessResult {
 }
 
 pub struct BootstrapData {
+    pub done: bool,
     pub current_epoch: u64,
     pub next_epoch_start_slot: Slot,
     pub sleep_time: u64,
@@ -98,8 +104,8 @@ fn process_bootstrap_event(
                         tokio::time::sleep(Duration::from_secs(sleep_time)).await;
                     }
                     match crate::bootstrap::bootstrap_accounts(rpc_url).await {
-                        Ok((stakes, votes)) => {
-                            BootstrapEvent::BootstrapAccountsFetched(stakes, votes)
+                        Ok((stakes, votes, history)) => {
+                            BootstrapEvent::BootstrapAccountsFetched(stakes, votes, history)
                         }
                         Err(err) => {
                             log::warn!(
@@ -112,22 +118,22 @@ fn process_bootstrap_event(
             });
             BootsrapProcessResult::TaskHandle(jh)
         }
-        BootstrapEvent::BootstrapAccountsFetched(stakes, votes) => {
+        BootstrapEvent::BootstrapAccountsFetched(stakes, votes, history) => {
             log::info!("BootstrapEvent::BootstrapAccountsFetched RECV");
             match (extract_stakestore(stakestore), extract_votestore(votestore)) {
                 (Ok(stake_map), Ok(vote_map)) => BootsrapProcessResult::Event(
-                    BootstrapEvent::StoreExtracted(stake_map, vote_map, stakes, votes),
+                    BootstrapEvent::StoreExtracted(stake_map, vote_map, stakes, votes, history),
                 ),
                 _ => {
                     let jh = tokio::spawn(async move {
                         tokio::time::sleep(Duration::from_secs(1)).await;
-                        BootstrapEvent::BootstrapAccountsFetched(stakes, votes)
+                        BootstrapEvent::BootstrapAccountsFetched(stakes, votes, history)
                     });
                     BootsrapProcessResult::TaskHandle(jh)
                 }
             }
         }
-        BootstrapEvent::StoreExtracted(mut stake_map, mut vote_map, stakes, votes) => {
+        BootstrapEvent::StoreExtracted(mut stake_map, mut vote_map, stakes, votes, history) => {
             log::info!("BootstrapEvent::StoreExtracted RECV");
             //merge new PA with stake map and vote map in a specific task
             let jh = tokio::task::spawn_blocking({
@@ -137,6 +143,7 @@ fn process_bootstrap_event(
                     crate::stakestore::merge_program_account_in_strake_map(
                         &mut stake_map,
                         stakes,
+                        history,
                         0, //with RPC no way to know the slot of the account update. Set to 0.
                         current_epoch,
                     );
@@ -170,17 +177,34 @@ fn process_bootstrap_event(
 
 async fn bootstrap_accounts(
     rpc_url: String,
-) -> Result<(Vec<(Pubkey, Account)>, Vec<(Pubkey, Account)>), ClientError> {
-    let furure = get_stake_account(rpc_url.clone()).and_then(|stakes| async move {
-        get_vote_account(rpc_url).await.map(|votes| (stakes, votes))
-    });
+) -> Result<
+    (
+        Vec<(Pubkey, Account)>,
+        Vec<(Pubkey, Account)>,
+        Vec<(Pubkey, Account)>,
+    ),
+    ClientError,
+> {
+    let furure = get_stake_account(rpc_url)
+        .and_then(|(stakes, rpc_url)| async move {
+            get_vote_account(rpc_url)
+                .await
+                .map(|(votes, rpc_url)| (stakes, votes, rpc_url))
+        })
+        .and_then(|(stakes, votes, rpc_url)| async move {
+            get_stakehistory_account(rpc_url)
+                .await
+                .map(|history| (stakes, votes, history))
+        });
     furure.await
 }
 
-async fn get_stake_account(rpc_url: String) -> Result<Vec<(Pubkey, Account)>, ClientError> {
+async fn get_stake_account(
+    rpc_url: String,
+) -> Result<(Vec<(Pubkey, Account)>, String), ClientError> {
     log::info!("TaskToExec RpcGetStakeAccount start");
     let rpc_client = RpcClient::new_with_timeout_and_commitment(
-        rpc_url,
+        rpc_url.clone(),
         Duration::from_secs(600),
         CommitmentConfig::finalized(),
     );
@@ -188,13 +212,15 @@ async fn get_stake_account(rpc_url: String) -> Result<Vec<(Pubkey, Account)>, Cl
         .get_program_accounts(&solana_sdk::stake::program::id())
         .await;
     log::info!("TaskToExec RpcGetStakeAccount END");
-    res_stake
+    res_stake.map(|stake| (stake, rpc_url))
 }
 
-async fn get_vote_account(rpc_url: String) -> Result<Vec<(Pubkey, Account)>, ClientError> {
+async fn get_vote_account(
+    rpc_url: String,
+) -> Result<(Vec<(Pubkey, Account)>, String), ClientError> {
     log::info!("TaskToExec RpcGetVoteAccount start");
     let rpc_client = RpcClient::new_with_timeout_and_commitment(
-        rpc_url,
+        rpc_url.clone(),
         Duration::from_secs(600),
         CommitmentConfig::finalized(),
     );
@@ -202,5 +228,22 @@ async fn get_vote_account(rpc_url: String) -> Result<Vec<(Pubkey, Account)>, Cli
         .get_program_accounts(&solana_sdk::vote::program::id())
         .await;
     log::info!("TaskToExec RpcGetVoteAccount END");
-    res_vote
+    res_vote.map(|votes| (votes, rpc_url))
+}
+
+async fn get_stakehistory_account(rpc_url: String) -> Result<Vec<(Pubkey, Account)>, ClientError> {
+    log::info!("TaskToExec RpcGetStakeHistory start");
+    let rpc_client = RpcClient::new_with_timeout_and_commitment(
+        rpc_url,
+        Duration::from_secs(600),
+        CommitmentConfig::finalized(),
+    );
+    let res_stake = rpc_client
+        .get_program_accounts(&solana_sdk::sysvar::stake_history::id())
+        .await;
+    log::info!(
+        "TaskToExec RpcGetStakeHistory END with len:{:?}",
+        res_stake.as_ref().map(|history| history.len())
+    );
+    res_stake
 }

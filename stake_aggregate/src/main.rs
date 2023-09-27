@@ -11,6 +11,7 @@
   }
 '
 
+
 curl http://localhost:3000 -X POST -H "Content-Type: application/json" -d '
   {
     "jsonrpc": "2.0",
@@ -18,7 +19,28 @@ curl http://localhost:3000 -X POST -H "Content-Type: application/json" -d '
     "method": "bootstrap_accounts",
     "params": []
   }
+' -o extract_stake_532_agg.json
+
+
+curl http://localhost:3000 -X POST -H "Content-Type: application/json" -d '
+  {
+    "jsonrpc": "2.0",
+    "id" : 1,
+    "method": "stake_accounts",
+    "params": []
+  }
 ' -o extract_stake_529_end.json
+
+
+curl http://localhost:3000 -X POST -H "Content-Type: application/json" -d '
+  {
+    "jsonrpc": "2.0",
+    "id" : 1,
+    "method": "getLeaderSchedule",
+    "params": []
+  }
+'
+
 */
 
 //TODO: add stake verify that it' not already desactivated.
@@ -31,11 +53,17 @@ use crate::votestore::VoteStore;
 use anyhow::bail;
 use futures_util::stream::FuturesUnordered;
 use futures_util::StreamExt;
+use solana_sdk::account::Account;
+use solana_sdk::account::AccountSharedData;
 use solana_sdk::commitment_config::CommitmentConfig;
 use solana_sdk::pubkey::Pubkey;
 use solana_sdk::stake::state::Delegation;
+use solana_sdk::stake_history::StakeHistory;
+use solana_sdk::sysvar::rent::Rent;
 use solana_sdk::vote::state::VoteState;
 use std::collections::HashMap;
+use std::env;
+use std::sync::Arc;
 use tokio::time::Duration;
 use yellowstone_grpc_client::GeyserGrpcClient;
 use yellowstone_grpc_proto::geyser::CommitmentLevel;
@@ -137,11 +165,33 @@ async fn run_loop<F: Interceptor>(mut client: GeyserGrpcClient<F>) -> anyhow::Re
     let mut votestore = VoteStore::new(VOTESTORE_INITIAL_CAPACITY);
 
     //leader schedule
-    let mut leader_schedule_data = crate::leader_schedule::bootstrap_leader_schedule(
-        CURRENT_SCHEDULE_VOTE_STAKES_FILE,
-        NEXT_SCHEDULE_VOTE_STAKES_FILE,
+    let args: Vec<String> = env::args().collect();
+    log::info!("agrs:{:?}", args);
+    let (schedule_current_file, schedule_next_file) = if args.len() == 3 {
+        let current_path: String = args[1]
+            .parse()
+            .unwrap_or(CURRENT_SCHEDULE_VOTE_STAKES_FILE.to_string());
+        let next_path: String = args[2]
+            .parse()
+            .unwrap_or(NEXT_SCHEDULE_VOTE_STAKES_FILE.to_string());
+        (current_path, next_path)
+    } else {
+        (
+            CURRENT_SCHEDULE_VOTE_STAKES_FILE.to_string(),
+            NEXT_SCHEDULE_VOTE_STAKES_FILE.to_string(),
+        )
+    };
+    let mut leader_schedule_data = match crate::leader_schedule::bootstrap_leader_schedule(
+        &schedule_current_file,
+        &schedule_next_file,
         current_epoch_state.current_epoch.slots_in_epoch,
-    )?;
+    ) {
+        Ok(data) => data,
+        Err(err) => {
+            log::warn!("Can't load vote stakes using these files: current:{schedule_current_file} next:{schedule_next_file}. Error:{err}");
+            crate::leader_schedule::CalculatedSchedule::default()
+        }
+    };
 
     //future execution collection.
     let mut spawned_bootstrap_task = FuturesUnordered::new();
@@ -161,6 +211,7 @@ async fn run_loop<F: Interceptor>(mut client: GeyserGrpcClient<F>) -> anyhow::Re
             owner: vec![
                 solana_sdk::stake::program::ID.to_string(),
                 solana_sdk::vote::program::ID.to_string(),
+                solana_sdk::sysvar::stake_history::ID.to_string(),
                 //                solana_sdk::system_program::ID.to_string(),
             ],
             filters: vec![],
@@ -208,7 +259,8 @@ async fn run_loop<F: Interceptor>(mut client: GeyserGrpcClient<F>) -> anyhow::Re
     tokio::spawn(rpc_handle.stopped());
 
     //Init bootstrap process
-    let bootstrap_data = BootstrapData {
+    let mut bootstrap_data = BootstrapData {
+        done: false,
         current_epoch: current_epoch_state.current_epoch.epoch,
         next_epoch_start_slot: current_epoch_state.next_epoch_start_slot,
         sleep_time: 1,
@@ -247,15 +299,21 @@ async fn run_loop<F: Interceptor>(mut client: GeyserGrpcClient<F>) -> anyhow::Re
                             }
                         });
                     }
-                    crate::rpc::Requests::BootstrapAccounts(tx) => {
-                        log::info!("RPC start save_stakes");
+                    crate::rpc::Requests::GetStakestore(tx) => {
                         let current_stakes = stakestore.get_cloned_stake_map();
                         if let Err(err) = tx.send((current_stakes, current_epoch_state.current_slot.confirmed_slot)){
-                            println!("Channel error during sending bacl request status error:{err:?}");
+                            println!("Channel error during sending back request status error:{err:?}");
                         }
-                        log::info!("RPC bootstrap account send");
+                        log::info!("RPC GetStakestore account send");
                     },
-                    _ => crate::rpc::server_rpc_request(req, &current_epoch_state),
+                    crate::rpc::Requests::GetVotestore(tx) => {
+                        let current_votes = votestore.get_cloned_vote_map();
+                        if let Err(err) = tx.send((current_votes, current_epoch_state.current_slot.confirmed_slot)){
+                            println!("Channel error during sending back request status error:{err:?}");
+                        }
+                        log::info!("RPC GetVotestore account send");
+                    },
+                    _ => crate::rpc::server_rpc_request(req, &current_epoch_state, &leader_schedule_data),
                 }
 
             },
@@ -268,7 +326,7 @@ async fn run_loop<F: Interceptor>(mut client: GeyserGrpcClient<F>) -> anyhow::Re
 
             //exec bootstrap task
             Some(Ok(event)) = spawned_bootstrap_task.next() =>  {
-                crate::bootstrap::run_bootstrap_events(event, &mut spawned_bootstrap_task, &mut stakestore, &mut votestore, &bootstrap_data);
+                crate::bootstrap::run_bootstrap_events(event, &mut spawned_bootstrap_task, &mut stakestore, &mut votestore, &mut bootstrap_data);
             }
             //Manage RPC call result execution
             Some(Ok(event)) = spawned_leader_schedule_task.next() =>  {
@@ -283,7 +341,7 @@ async fn run_loop<F: Interceptor>(mut client: GeyserGrpcClient<F>) -> anyhow::Re
                     match new_schedule {
                         Ok((new_schedule, new_stakes)) => {
                             leader_schedule_data.next = Some(LeaderScheduleData {
-                                                schedule: new_schedule,
+                                                schedule: Arc::new(new_schedule),
                                                 vote_stakes: new_stakes,
                                                 epoch: epoch.epoch,
                                             });
@@ -327,7 +385,7 @@ async fn run_loop<F: Interceptor>(mut client: GeyserGrpcClient<F>) -> anyhow::Re
                                             //log::trace!("Geyser receive new account");
                                             match account.owner {
                                                 solana_sdk::stake::program::ID => {
-                                                    log::info!("Geyser Notif stake account:{}", account);
+                                                    log::info!("Geyser notif stake account:{}", account);
                                                     if let Err(err) = stakestore.notify_stake_change(
                                                         account,
                                                         current_epoch_state.current_epoch_end_slot(),
@@ -343,6 +401,9 @@ async fn run_loop<F: Interceptor>(mut client: GeyserGrpcClient<F>) -> anyhow::Re
                                                         log::warn!("Can't add new stake from account data err:{}", err);
                                                         continue;
                                                     }
+                                                }
+                                                solana_sdk::sysvar::stake_history::ID => {
+                                                    log::info!("Geyser notif History account:{}", account);
                                                 }
                                                 solana_sdk::system_program::ID => {
                                                     log::info!("system_program account:{}",account.pubkey);
@@ -367,13 +428,15 @@ async fn run_loop<F: Interceptor>(mut client: GeyserGrpcClient<F>) -> anyhow::Re
                                         // );
 
                                         let schedule_event = current_epoch_state.process_new_slot(&slot);
-                                        if let Some(init_event) = schedule_event {
-                                            crate::leader_schedule::run_leader_schedule_events(
-                                                init_event,
-                                                &mut spawned_leader_schedule_task,
-                                                &mut stakestore,
-                                                &mut votestore,
-                                            );
+                                        if bootstrap_data.done {
+                                            if let Some(init_event) = schedule_event {
+                                                crate::leader_schedule::run_leader_schedule_events(
+                                                    init_event,
+                                                    &mut spawned_leader_schedule_task,
+                                                    &mut stakestore,
+                                                    &mut votestore,
+                                                );
+                                            }
                                         }
 
                                     }
@@ -394,10 +457,11 @@ async fn run_loop<F: Interceptor>(mut client: GeyserGrpcClient<F>) -> anyhow::Re
                                                             let source_bytes: [u8; 64] = notif_tx.signature[..solana_sdk::signature::SIGNATURE_BYTES]
                                                                 .try_into()
                                                                 .unwrap();
-                                                            log::info!("New stake Tx sign:{} at block slot:{:?} current_slot:{}"
+                                                            log::info!("New stake Tx sign:{} at block slot:{:?} current_slot:{} accounts:{:?}"
                                                                 , solana_sdk::signature::Signature::from(source_bytes).to_string()
                                                                 , block.slot
                                                                 , current_epoch_state.current_slot.confirmed_slot
+                                                                , instruction.accounts
                                                             );
                                                             let program_index = instruction.program_id_index;
                                                             crate::stakestore::process_stake_tx_message(
@@ -430,23 +494,24 @@ async fn run_loop<F: Interceptor>(mut client: GeyserGrpcClient<F>) -> anyhow::Re
                         }
                      }
                      None => {
-                        log::warn!("The geyser stream close try to reconnect and resynchronize.");
+                        log::error!("The geyser stream close try to reconnect and resynchronize.");
+                        break;
                         //TODO call same initial code.
-                        let new_confirmed_stream = client
-                        .subscribe_once(
-                            slots.clone(),
-                            accounts.clone(),           //accounts
-                            Default::default(), //tx
-                            Default::default(), //entry
-                            blocks.clone(), //full block
-                            Default::default(), //block meta
-                            Some(CommitmentLevel::Confirmed),
-                            vec![],
-                        )
-                        .await?;
+                        // let new_confirmed_stream = client
+                        // .subscribe_once(
+                        //     slots.clone(),
+                        //     accounts.clone(),           //accounts
+                        //     Default::default(), //tx
+                        //     Default::default(), //entry
+                        //     blocks.clone(), //full block
+                        //     Default::default(), //block meta
+                        //     Some(CommitmentLevel::Confirmed),
+                        //     vec![],
+                        // )
+                        // .await?;
 
-                        confirmed_stream = new_confirmed_stream;
-                        log::info!("reconnection done");
+                        // confirmed_stream = new_confirmed_stream;
+                        // log::info!("reconnection done");
 
                         //TODO resynchronize.
                      }
@@ -455,7 +520,7 @@ async fn run_loop<F: Interceptor>(mut client: GeyserGrpcClient<F>) -> anyhow::Re
         }
     }
 
-    //Ok(())
+    Ok(())
 }
 
 #[derive(Debug)]
@@ -481,12 +546,23 @@ impl AccountPretty {
         }
         crate::stakestore::read_stake_from_account_data(self.data.as_slice())
     }
+
     fn read_vote(&self) -> anyhow::Result<VoteState> {
         if self.data.is_empty() {
             log::warn!("Vote account with empty data. Can't read vote.");
             bail!("Error: read Vote account with empty data");
         }
         Ok(VoteState::deserialize(&self.data)?)
+    }
+
+    fn read_stake_history(&self) -> Option<StakeHistory> {
+        // if self.data.is_empty() {
+        //     log::warn!("Stake history account with empty data. Can't read StakeHistory.");
+        //     bail!("Error: read StakeHistory account with empty data");
+        // }
+        solana_sdk::account::from_account::<StakeHistory, _>(&program_account(&self.data))
+
+        //        Ok(StakeHistory::deserialize(&self.data)?)
     }
 }
 
@@ -529,5 +605,15 @@ fn read_account(
         data: inner_account.data,
         write_version: inner_account.write_version,
         txn_signature: bs58::encode(inner_account.txn_signature.unwrap_or_default()).into_string(),
+    })
+}
+
+fn program_account(program_data: &[u8]) -> AccountSharedData {
+    AccountSharedData::from(Account {
+        lamports: Rent::default().minimum_balance(program_data.len()).min(1),
+        data: program_data.to_vec(),
+        owner: solana_sdk::bpf_loader::id(),
+        executable: true,
+        rent_epoch: 0,
     })
 }

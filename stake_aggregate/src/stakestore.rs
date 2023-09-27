@@ -5,10 +5,12 @@ use borsh::BorshDeserialize;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use solana_sdk::account::Account;
+use solana_sdk::account::AccountSharedData;
 use solana_sdk::pubkey::Pubkey;
 use solana_sdk::stake::instruction::StakeInstruction;
 use solana_sdk::stake::state::Delegation;
 use solana_sdk::stake::state::StakeState;
+use solana_sdk::stake_history::StakeHistory;
 use std::collections::HashMap;
 use tokio::sync::mpsc::Sender;
 use yellowstone_grpc_proto::solana::storage::confirmed_block::CompiledInstruction;
@@ -50,10 +52,11 @@ fn stake_map_notify_stake(map: &mut StakeMap, stake: StoredStake, current_epoch:
             if strstake.last_update_slot <= stake.last_update_slot {
                 if stake.is_removed(current_epoch) {
                     log::info!(
-                        "stake_map_notify_stake Stake store insert stake: {} stake:{stake:?}",
+                        "stake_map_notify_stake Stake store remove stake: {} stake:{stake:?} current_epoch:{current_epoch}",
                         stake.pubkey
                     );
-                    map.remove(&stake.pubkey);
+                    //TODO activate when remove algo is validated.
+                    //map.remove(&stake.pubkey);
                 } else {
                     log::info!("stake_map_notify_stake Stake store updated stake: {} old_stake:{strstake:?} stake:{stake:?}", stake.pubkey);
                     *strstake = stake;
@@ -124,6 +127,8 @@ impl StoredStake {
         self.stake.activation_epoch == crate::leader_schedule::MAX_EPOCH_VALUE
             || self.stake.deactivation_epoch >= current_epoch
     }
+
+    fn add_history(&mut self) {}
 }
 #[derive(Debug, Default)]
 pub struct StakeStore {
@@ -275,11 +280,14 @@ impl StakeStore {
 
 pub fn merge_program_account_in_strake_map(
     stake_map: &mut StakeMap,
-    pa_list: Vec<(Pubkey, Account)>,
+    stakes_list: Vec<(Pubkey, Account)>,
+    stakehistory_list: Vec<(Pubkey, Account)>,
     last_update_slot: Slot,
     current_epoch: u64,
 ) {
-    pa_list
+    let mut stake_history_map: HashMap<Pubkey, Account> = stakehistory_list.into_iter().collect();
+
+    stakes_list
         .into_iter()
         .filter_map(
             |(pk, account)| match read_stake_from_account_data(&account.data) {
@@ -298,8 +306,24 @@ pub fn merge_program_account_in_strake_map(
                 last_update_slot,
                 write_version: 0,
             };
+            if let Some(history) = stake_history_map.remove(&stake.pubkey) {
+                log::info!(
+                    "merge_program_account_in_strake_map found stake history for account:{}",
+                    stake.pubkey
+                );
+                match read_historystake_from_account(history) {
+                    Some(history) => (),
+                    None => (),
+                }
+            }
+
             stake_map_notify_stake(stake_map, stake, current_epoch);
         });
+
+    log::info!(
+        "merge_program_account_in_strake_map history account not processed:{}",
+        stake_history_map.len()
+    );
 }
 
 pub fn read_stake_from_account_data(mut data: &[u8]) -> anyhow::Result<Option<Delegation>> {
@@ -313,6 +337,10 @@ pub fn read_stake_from_account_data(mut data: &[u8]) -> anyhow::Result<Option<De
         StakeState::Uninitialized => Ok(None),
         StakeState::RewardsPool => Ok(None),
     }
+}
+
+pub fn read_historystake_from_account(account: Account) -> Option<StakeHistory> {
+    solana_sdk::account::from_account::<StakeHistory, _>(&AccountSharedData::from(account))
 }
 
 pub async fn start_stake_verification_loop(

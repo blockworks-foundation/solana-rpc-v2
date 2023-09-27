@@ -1,6 +1,7 @@
 use crate::AccountPretty;
 use crate::Slot;
 use anyhow::bail;
+use serde::{Deserialize, Serialize};
 use solana_sdk::account::Account;
 use solana_sdk::pubkey::Pubkey;
 use solana_sdk::vote::state::VoteState;
@@ -38,7 +39,7 @@ pub fn merge_votestore(votestore: &mut VoteStore, vote_map: VoteMap) -> anyhow::
     Ok(())
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub struct StoredVote {
     pub pubkey: Pubkey,
     pub vote_data: VoteState,
@@ -60,6 +61,10 @@ impl VoteStore {
             updates: vec![],
             extracted: false,
         }
+    }
+
+    pub fn get_cloned_vote_map(&self) -> VoteMap {
+        self.votes.clone()
     }
 
     //return the contained stake map to do an external update.

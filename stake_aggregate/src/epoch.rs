@@ -7,6 +7,18 @@ use solana_sdk::epoch_info::EpochInfo;
 use yellowstone_grpc_proto::geyser::CommitmentLevel as GeyserCommitmentLevel;
 use yellowstone_grpc_proto::prelude::SubscribeUpdateSlot;
 
+pub fn get_epoch_for_slot(slot: Slot, current_epoch: &CurrentEpochSlotState) -> u64 {
+    let slots_in_epoch = current_epoch.current_epoch.slots_in_epoch;
+    let epoch_start_slot = current_epoch.current_epoch_start_slot();
+    if slot >= epoch_start_slot {
+        let slot_distance = (slot - epoch_start_slot) / slots_in_epoch;
+        current_epoch.current_epoch.epoch + slot_distance
+    } else {
+        let slot_distance = (epoch_start_slot - slot) / slots_in_epoch;
+        current_epoch.current_epoch.epoch - slot_distance
+    }
+}
+
 #[derive(Debug)]
 pub struct CurrentEpochSlotState {
     pub current_slot: CurrentSlot,
@@ -29,6 +41,10 @@ impl CurrentEpochSlotState {
             next_epoch_start_slot,
             first_epoch_slot: false,
         })
+    }
+
+    pub fn current_epoch_start_slot(&self) -> Slot {
+        self.current_epoch.absolute_slot - self.current_epoch.slot_index
     }
 
     pub fn current_epoch_end_slot(&self) -> Slot {

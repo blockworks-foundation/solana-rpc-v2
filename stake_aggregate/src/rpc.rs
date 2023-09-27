@@ -1,6 +1,9 @@
 use crate::epoch::CurrentEpochSlotState;
+use crate::leader_schedule::CalculatedSchedule;
 use crate::stakestore::StakeMap;
 use crate::stakestore::StoredStake;
+use crate::votestore::{StoredVote, VoteMap};
+use crate::LeaderScheduleData;
 use crate::Slot;
 use jsonrpsee::core::Error as JsonRpcError;
 use jsonrpsee::proc_macros::rpc;
@@ -10,6 +13,7 @@ use solana_client::rpc_config::RpcContextConfig;
 use solana_client::rpc_response::RpcBlockhash;
 use solana_client::rpc_response::RpcVoteAccountStatus;
 use solana_sdk::commitment_config::CommitmentConfig;
+use std::sync::Arc;
 //use solana_rpc_client_api::response::Response as RpcResponse;
 use solana_sdk::epoch_info::EpochInfo;
 use std::collections::HashMap;
@@ -74,12 +78,6 @@ pub trait ConsensusRpc {
     #[method(name = "getEpochInfo")]
     async fn get_epoch_info(&self) -> Result<EpochInfo>;
 
-    #[method(name = "getLeaderSchedule")]
-    async fn get_leader_schedule(
-        &self,
-        slot: Option<u64>,
-    ) -> Result<Option<HashMap<String, Vec<usize>>>>;
-
     #[method(name = "getVoteAccounts")]
     async fn get_vote_accounts(&self) -> Result<RpcVoteAccountStatus>;
 }
@@ -112,13 +110,6 @@ impl ConsensusRpcServer for RPCServer {
         Ok(rx.await?)
     }
 
-    async fn get_leader_schedule(
-        &self,
-        slot: Option<u64>,
-    ) -> Result<Option<HashMap<String, Vec<usize>>>> {
-        todo!()
-    }
-
     async fn get_vote_accounts(&self) -> Result<RpcVoteAccountStatus> {
         todo!()
     }
@@ -126,15 +117,24 @@ impl ConsensusRpcServer for RPCServer {
 
 pub enum Requests {
     SaveStakes,
-    BootstrapAccounts(tokio::sync::oneshot::Sender<(StakeMap, Slot)>),
+    GetStakestore(tokio::sync::oneshot::Sender<(StakeMap, Slot)>),
+    GetVotestore(tokio::sync::oneshot::Sender<(VoteMap, Slot)>),
     EpochInfo(tokio::sync::oneshot::Sender<EpochInfo>),
     Slot(
         tokio::sync::oneshot::Sender<Option<Slot>>,
         Option<RpcContextConfig>,
     ),
+    LeaderSchedule(
+        tokio::sync::oneshot::Sender<Option<Arc<HashMap<String, Vec<usize>>>>>,
+        Option<u64>,
+    ),
 }
 
-pub fn server_rpc_request(request: Requests, current_epoch_state: &CurrentEpochSlotState) {
+pub fn server_rpc_request(
+    request: Requests,
+    current_epoch_state: &CurrentEpochSlotState,
+    leader_schedules: &CalculatedSchedule,
+) {
     match request {
         crate::rpc::Requests::EpochInfo(tx) => {
             if let Err(err) = tx.send(current_epoch_state.current_epoch.clone()) {
@@ -152,6 +152,28 @@ pub fn server_rpc_request(request: Requests, current_epoch_state: &CurrentEpochS
                 log::warn!("Channel error during sending back request status error:{err:?}");
             }
         }
+        crate::rpc::Requests::LeaderSchedule(tx, slot) => {
+            let slot = slot.unwrap_or_else(|| current_epoch_state.current_slot.confirmed_slot);
+            let epoch = crate::epoch::get_epoch_for_slot(slot, current_epoch_state);
+
+            log::info!(
+                "Requests::LeaderSchedule slot:{slot} epoch:{epoch} current epoch:{}",
+                current_epoch_state.current_epoch.epoch
+            );
+            //currently only return schedule for current of next epoch.
+            let get_schedule_fn = |schedule: &LeaderScheduleData| {
+                (schedule.epoch == epoch).then(|| schedule.schedule.clone()) //Arc clone.
+            };
+            let schedule = leader_schedules
+                .current
+                .as_ref()
+                .and_then(get_schedule_fn)
+                .or_else(|| leader_schedules.next.as_ref().and_then(get_schedule_fn));
+
+            if let Err(err) = tx.send(schedule) {
+                log::warn!("Channel error during sending back request status error:{err:?}");
+            }
+        }
         _ => unreachable!(),
     }
 }
@@ -165,7 +187,30 @@ pub(crate) async fn run_server(request_tx: Sender<Requests>) -> Result<ServerHan
         .await?;
     let mut module = RpcModule::new(request_tx);
 
-    //register start Batch Tx send entry point
+    //Public RPC method
+    //use this way to process the RPC call to avoid to clone the content of the schedule.
+    //in the trait version, we have to return the full data that are serialized in json after.
+    module.register_async_method("getLeaderSchedule", |params, request_tx| async move {
+        log::info!("RPC getLeaderSchedule");
+        let slot: Option<u64> = params.one().unwrap_or(None);
+        let (tx, rx) = oneshot::channel();
+        if let Err(err) = request_tx.send(Requests::LeaderSchedule(tx, slot)).await {
+            return serde_json::Value::String(format!("error during query processing:{err}",));
+        }
+        rx.await
+            .map_err(|err| format!("error during bootstrap query processing:{err}"))
+            .and_then(|schedule| {
+                serde_json::to_value(&schedule).map_err(|err| {
+                    format!(
+                        "error during json serialisation:{}",
+                        JsonRpcError::ParseError(err)
+                    )
+                })
+            })
+            .unwrap_or_else(|err| serde_json::Value::String(err.to_string()))
+    })?;
+
+    //Test RPC method
     module.register_async_method("save_stakes", |_params, request_tx| async move {
         log::trace!("RPC save_stakes");
         request_tx
@@ -177,7 +222,7 @@ pub(crate) async fn run_server(request_tx: Sender<Requests>) -> Result<ServerHan
     module.register_async_method("bootstrap_accounts", |_params, request_tx| async move {
         log::trace!("RPC bootstrap_accounts");
         let (tx, rx) = oneshot::channel();
-        if let Err(err) = request_tx.send(Requests::BootstrapAccounts(tx)).await {
+        if let Err(err) = request_tx.send(Requests::GetStakestore(tx)).await {
             return serde_json::Value::String(format!("error during query processing:{err}",));
         }
         rx.await
@@ -186,6 +231,30 @@ pub(crate) async fn run_server(request_tx: Sender<Requests>) -> Result<ServerHan
                 println!("RPC end request status");
                 //replace pubkey with String. Json only allow distionary key with string.
                 let ret: HashMap<String, StoredStake> = accounts
+                    .into_iter()
+                    .map(|(pk, acc)| (pk.to_string(), acc))
+                    .collect();
+                serde_json::to_value((slot, ret)).map_err(|err| {
+                    format!(
+                        "error during json serialisation:{}",
+                        JsonRpcError::ParseError(err)
+                    )
+                })
+            })
+            .unwrap_or_else(|err| serde_json::Value::String(err.to_string()))
+    })?;
+    module.register_async_method("stake_accounts", |_params, request_tx| async move {
+        log::trace!("RPC bootstrap_accounts");
+        let (tx, rx) = oneshot::channel();
+        if let Err(err) = request_tx.send(Requests::GetVotestore(tx)).await {
+            return serde_json::Value::String(format!("error during query processing:{err}",));
+        }
+        rx.await
+            .map_err(|err| format!("error during bootstrap query processing:{err}"))
+            .and_then(|(accounts, slot)| {
+                println!("RPC end request status");
+                //replace pubkey with String. Json only allow distionary key with string.
+                let ret: HashMap<String, StoredVote> = accounts
                     .into_iter()
                     .map(|(pk, acc)| (pk.to_string(), acc))
                     .collect();
