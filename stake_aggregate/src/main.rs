@@ -53,13 +53,9 @@ use crate::votestore::VoteStore;
 use anyhow::bail;
 use futures_util::stream::FuturesUnordered;
 use futures_util::StreamExt;
-use solana_sdk::account::Account;
-use solana_sdk::account::AccountSharedData;
 use solana_sdk::commitment_config::CommitmentConfig;
 use solana_sdk::pubkey::Pubkey;
 use solana_sdk::stake::state::Delegation;
-use solana_sdk::stake_history::StakeHistory;
-use solana_sdk::sysvar::rent::Rent;
 use solana_sdk::vote::state::VoteState;
 use std::collections::HashMap;
 use std::env;
@@ -282,10 +278,12 @@ async fn run_loop<F: Interceptor>(mut client: GeyserGrpcClient<F>) -> anyhow::Re
                         tokio::task::spawn_blocking({
                             log::info!("RPC start save_stakes");
                             let current_stakes = stakestore.get_cloned_stake_map();
+                            let history = stakestore.get_cloned_stake_history();
                             let move_epoch = current_epoch_state.current_epoch.clone();
                             move || {
                                 let current_stake = crate::leader_schedule::build_current_stakes(
                                     &current_stakes,
+                                    history.as_ref(),
                                     &move_epoch,
                                     RPC_URL.to_string(),
                                     CommitmentConfig::confirmed(),
@@ -554,16 +552,6 @@ impl AccountPretty {
         }
         Ok(VoteState::deserialize(&self.data)?)
     }
-
-    fn read_stake_history(&self) -> Option<StakeHistory> {
-        // if self.data.is_empty() {
-        //     log::warn!("Stake history account with empty data. Can't read StakeHistory.");
-        //     bail!("Error: read StakeHistory account with empty data");
-        // }
-        solana_sdk::account::from_account::<StakeHistory, _>(&program_account(&self.data))
-
-        //        Ok(StakeHistory::deserialize(&self.data)?)
-    }
 }
 
 impl std::fmt::Display for AccountPretty {
@@ -608,12 +596,12 @@ fn read_account(
     })
 }
 
-fn program_account(program_data: &[u8]) -> AccountSharedData {
-    AccountSharedData::from(Account {
-        lamports: Rent::default().minimum_balance(program_data.len()).min(1),
-        data: program_data.to_vec(),
-        owner: solana_sdk::bpf_loader::id(),
-        executable: true,
-        rent_epoch: 0,
-    })
-}
+// fn program_account(program_data: &[u8]) -> AccountSharedData {
+//     AccountSharedData::from(Account {
+//         lamports: Rent::default().minimum_balance(program_data.len()).min(1),
+//         data: program_data.to_vec(),
+//         owner: solana_sdk::bpf_loader::id(),
+//         executable: true,
+//         rent_epoch: 0,
+//     })
+// }

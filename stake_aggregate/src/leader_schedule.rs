@@ -10,7 +10,7 @@ use solana_sdk::clock::NUM_CONSECUTIVE_LEADER_SLOTS;
 use solana_sdk::commitment_config::CommitmentConfig;
 use solana_sdk::epoch_info::EpochInfo;
 use solana_sdk::pubkey::Pubkey;
-use solana_sdk::stake::state::Delegation;
+use solana_sdk::stake_history::StakeHistory;
 use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::fs::File;
@@ -166,7 +166,7 @@ pub fn run_leader_schedule_events(
 
 pub enum LeaderScheduleEvent {
     InitLeaderschedule(EpochInfo),
-    CalculateScedule(StakeMap, VoteMap, EpochInfo),
+    CalculateScedule(StakeMap, VoteMap, EpochInfo, Option<StakeHistory>),
     MergeStoreAndSaveSchedule(
         StakeMap,
         VoteMap,
@@ -193,10 +193,17 @@ fn process_leadershedule_event(
     match event {
         LeaderScheduleEvent::InitLeaderschedule(schedule_epoch) => {
             log::info!("LeaderScheduleEvent::InitLeaderschedule RECV");
+            //For test TODO put in extract and restore process to avoid to clone.
+            let stake_history = stakestore.get_cloned_stake_history();
             match (extract_stakestore(stakestore), extract_votestore(votestore)) {
-                (Ok(stake_map), Ok(vote_map)) => LeaderScheduleResult::Event(
-                    LeaderScheduleEvent::CalculateScedule(stake_map, vote_map, schedule_epoch),
-                ),
+                (Ok(stake_map), Ok(vote_map)) => {
+                    LeaderScheduleResult::Event(LeaderScheduleEvent::CalculateScedule(
+                        stake_map,
+                        vote_map,
+                        schedule_epoch,
+                        stake_history,
+                    ))
+                }
                 _ => {
                     log::warn!("process_leadershedule_event error during extract store");
                     let jh = tokio::spawn(async move {
@@ -207,7 +214,12 @@ fn process_leadershedule_event(
                 }
             }
         }
-        LeaderScheduleEvent::CalculateScedule(stake_map, vote_map, schedule_epoch) => {
+        LeaderScheduleEvent::CalculateScedule(
+            stake_map,
+            vote_map,
+            schedule_epoch,
+            stake_history,
+        ) => {
             log::info!("LeaderScheduleEvent::CalculateScedule RECV");
             let jh = tokio::task::spawn_blocking({
                 move || {
@@ -216,6 +228,7 @@ fn process_leadershedule_event(
                             &stake_map,
                             &vote_map,
                             &schedule_epoch,
+                            stake_history.as_ref(),
                         );
                     if let Ok((_, vote_stakes)) = &schedule_and_stakes {
                         if let Err(err) = save_schedule_vote_stakes(
@@ -269,12 +282,14 @@ fn calculate_leader_schedule_from_stake_map(
     stake_map: &crate::stakestore::StakeMap,
     vote_map: &crate::votestore::VoteMap,
     current_epoch_info: &EpochInfo,
+    stake_history: Option<&StakeHistory>,
 ) -> anyhow::Result<(HashMap<String, Vec<usize>>, Vec<(Pubkey, u64)>)> {
     let mut stakes = HashMap::<Pubkey, u64>::new();
-    log::trace!(
-        "calculate_leader_schedule_from_stake_map vote map len:{} stake map len:{}",
+    log::info!(
+        "calculate_leader_schedule_from_stake_map vote map len:{} stake map len:{} history len:{:?}",
         vote_map.len(),
-        stake_map.len()
+        stake_map.len(),
+        stake_history.as_ref().map(|h| h.len())
     );
 
     let ten_epoch_slot_long = 10 * current_epoch_info.slots_in_epoch;
@@ -282,35 +297,41 @@ fn calculate_leader_schedule_from_stake_map(
     //log::trace!("calculate_leader_schedule_from_stake_map stake_map:{stake_map:?} current_epoch_info:{current_epoch_info:?}");
     for storestake in stake_map.values() {
         //log::info!("Program_accounts stake:{stake:#?}");
-        if is_stake_to_add(storestake.pubkey, &storestake.stake, &current_epoch_info) {
-            // Add the stake in this stake account to the total for the delegated-to vote account
-            //get nodeid for vote account
-            let Some(vote_account) = vote_map.get(&storestake.stake.voter_pubkey) else {
-                log::warn!(
-                    "Vote account not found in vote map for stake vote account:{}",
-                    &storestake.stake.voter_pubkey
-                );
-                continue;
-            };
-            //remove vote account that hasn't vote since 10 epoch.
-            //on testnet the vote account CY7gjryUPV6Pwbsn4aArkMBL7HSaRHB8sPZUvhw558Tm node_id:6YpwLjgXcMWAj29govWQr87kaAGKS7CnoqWsEDJE4h8P
-            //hasn't vote since a long time but still return on RPC call get_voteaccounts.
-            //the validator don't use it for leader schedule.
-            if vote_account.vote_data.root_slot.unwrap_or(0)
-                < current_epoch_info
-                    .absolute_slot
-                    .saturating_sub(ten_epoch_slot_long)
-            {
-                log::warn!("Vote account:{} nodeid:{} that hasn't vote since 10 epochs. Remove leader_schedule."
+        //        if is_stake_to_add(storestake.pubkey, &storestake.stake, &current_epoch_info) {
+        // Add the stake in this stake account to the total for the delegated-to vote account
+        //get nodeid for vote account
+        let Some(vote_account) = vote_map.get(&storestake.stake.voter_pubkey) else {
+            log::warn!(
+                "Vote account not found in vote map for stake vote account:{}",
+                &storestake.stake.voter_pubkey
+            );
+            continue;
+        };
+        //TODO validate the number of epoch.
+        //remove vote account that hasn't vote since 10 epoch.
+        //on testnet the vote account CY7gjryUPV6Pwbsn4aArkMBL7HSaRHB8sPZUvhw558Tm node_id:6YpwLjgXcMWAj29govWQr87kaAGKS7CnoqWsEDJE4h8P
+        //hasn't vote since a long time but still return on RPC call get_voteaccounts.
+        //the validator don't use it for leader schedule.
+        if vote_account.vote_data.root_slot.unwrap_or(0)
+            < current_epoch_info
+                .absolute_slot
+                .saturating_sub(ten_epoch_slot_long)
+        {
+            log::warn!("Vote account:{} nodeid:{} that hasn't vote since 10 epochs. Stake for account:{:?}. Remove leader_schedule."
                     , storestake.stake.voter_pubkey
                     ,vote_account.vote_data.node_pubkey
+                    //TODO us the right reduce_stake_warmup_cooldown_epoch value from validator feature.
+                    , storestake.stake.stake(current_epoch_info.epoch, stake_history, Some(0)),
                 );
-            } else {
-                *(stakes
-                    .entry(vote_account.vote_data.node_pubkey)
-                    .or_insert(0)) += storestake.stake.stake;
-            }
+        } else {
+            *(stakes
+                .entry(vote_account.vote_data.node_pubkey)
+                .or_insert(0)) += storestake
+                .stake
+                //TODO us the right reduce_stake_warmup_cooldown_epoch value from validator feature.
+                .stake(current_epoch_info.epoch, stake_history, Some(0));
         }
+        //        }
     }
 
     let mut schedule_stakes: Vec<(Pubkey, u64)> = vec![];
@@ -324,31 +345,31 @@ fn calculate_leader_schedule_from_stake_map(
     Ok((leader_schedule, schedule_stakes))
 }
 
-fn is_stake_to_add(
-    stake_pubkey: Pubkey,
-    stake: &Delegation,
-    current_epoch_info: &EpochInfo,
-) -> bool {
-    //On test validator all stakes are attributes to an account with stake.delegation.activation_epoch == MAX_EPOCH_VALUE.
-    //It's considered as activated stake.
-    if stake.activation_epoch == MAX_EPOCH_VALUE {
-        log::info!(
-            "Found account with stake.delegation.activation_epoch == MAX_EPOCH_VALUE use it: {}",
-            stake_pubkey.to_string()
-        );
-    } else {
-        // Ignore stake accounts activated in this epoch (or later, to include activation_epoch of
-        // u64::MAX which indicates no activation ever happened)
-        if stake.activation_epoch >= current_epoch_info.epoch {
-            return false;
-        }
-        // Ignore stake accounts deactivated before this epoch
-        if stake.deactivation_epoch < current_epoch_info.epoch {
-            return false;
-        }
-    }
-    true
-}
+// fn is_stake_to_add(
+//     stake_pubkey: Pubkey,
+//     stake: &Delegation,
+//     current_epoch_info: &EpochInfo,
+// ) -> bool {
+//     //On test validator all stakes are attributes to an account with stake.delegation.activation_epoch == MAX_EPOCH_VALUE.
+//     //It's considered as activated stake.
+//     if stake.activation_epoch == MAX_EPOCH_VALUE {
+//         log::info!(
+//             "Found account with stake.delegation.activation_epoch == MAX_EPOCH_VALUE use it: {}",
+//             stake_pubkey.to_string()
+//         );
+//     } else {
+//         // Ignore stake accounts activated in this epoch (or later, to include activation_epoch of
+//         // u64::MAX which indicates no activation ever happened)
+//         if stake.activation_epoch >= current_epoch_info.epoch {
+//             return false;
+//         }
+//         // Ignore stake accounts deactivated before this epoch
+//         if stake.deactivation_epoch < current_epoch_info.epoch {
+//             return false;
+//         }
+//     }
+//     true
+// }
 
 //Copied from leader_schedule_utils.rs
 // Mostly cribbed from leader_schedule_utils
@@ -493,6 +514,7 @@ use borsh::BorshDeserialize;
 use solana_sdk::stake::state::StakeState;
 pub fn build_current_stakes(
     stake_map: &crate::stakestore::StakeMap,
+    stake_history: Option<&StakeHistory>,
     current_epoch_info: &EpochInfo,
     rpc_url: String,
     commitment: CommitmentConfig,
@@ -518,7 +540,11 @@ pub fn build_current_stakes(
         match BorshDeserialize::deserialize(&mut account.data.as_slice()).unwrap() {
             StakeState::Stake(_, stake) => {
                 //vote account version
-                if is_stake_to_add(pubkey, &stake.delegation, current_epoch_info) {
+                let effective_stake =
+                    stake
+                        .delegation
+                        .stake(current_epoch_info.epoch, stake_history, Some(0));
+                if effective_stake > 0 {
                     // Add the stake in this stake account to the total for the delegated-to vote account
                     log::trace!("RPC Stake {pubkey} account:{account:?} stake:{stake:?}");
                     (stakes_aggregated
@@ -530,7 +556,7 @@ pub fn build_current_stakes(
                         .or_insert(vec![]);
                     st_list.push((
                         pubkey.to_string(),
-                        stake.delegation.stake,
+                        effective_stake,
                         stake.delegation.activation_epoch,
                         stake.delegation.deactivation_epoch,
                     ));
@@ -542,8 +568,14 @@ pub fn build_current_stakes(
     let mut local_stakes = BTreeMap::<String, Vec<(String, u64, u64, u64)>>::new();
     stake_map
         .iter()
-        .filter(|(pubkey, stake)| is_stake_to_add(**pubkey, &stake.stake, current_epoch_info))
-        .for_each(|(pubkey, stake)| {
+        .filter_map(|(pubkey, stake)| {
+            let effective_stake =
+                stake
+                    .stake
+                    .stake(current_epoch_info.epoch, stake_history, Some(0));
+            (effective_stake > 0).then(|| (pubkey, stake, effective_stake))
+        })
+        .for_each(|(pubkey, stake, effective_stake)| {
             // log::trace!(
             //     "LCOAL Stake {pubkey} account:{:?} stake:{stake:?}",
             //     stake.stake.voter_pubkey
@@ -557,7 +589,7 @@ pub fn build_current_stakes(
                 .or_insert(vec![]);
             st_list.push((
                 pubkey.to_string(),
-                stake.stake.stake,
+                effective_stake,
                 stake.stake.activation_epoch,
                 stake.stake.deactivation_epoch,
             ));

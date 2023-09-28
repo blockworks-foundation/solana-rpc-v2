@@ -127,12 +127,11 @@ impl StoredStake {
         self.stake.activation_epoch == crate::leader_schedule::MAX_EPOCH_VALUE
             || self.stake.deactivation_epoch >= current_epoch
     }
-
-    fn add_history(&mut self) {}
 }
 #[derive(Debug, Default)]
 pub struct StakeStore {
     stakes: StakeMap,
+    stake_history: Option<StakeHistory>,
     updates: Vec<ExtractedAction>,
     extracted: bool,
 }
@@ -141,9 +140,14 @@ impl StakeStore {
     pub fn new(capacity: usize) -> Self {
         StakeStore {
             stakes: HashMap::with_capacity(capacity),
+            stake_history: None,
             updates: vec![],
             extracted: false,
         }
+    }
+
+    pub fn set_stake_history(&mut self, stake_history: StakeHistory) {
+        self.stake_history = Some(stake_history);
     }
 
     pub fn nb_stake_account(&self) -> usize {
@@ -152,6 +156,9 @@ impl StakeStore {
 
     pub fn get_cloned_stake_map(&self) -> StakeMap {
         self.stakes.clone()
+    }
+    pub fn get_cloned_stake_history(&self) -> Option<StakeHistory> {
+        self.stake_history.clone()
     }
 
     pub fn notify_stake_change(
@@ -238,6 +245,7 @@ impl StakeStore {
         }
         let stakestore = StakeStore {
             stakes: HashMap::new(),
+            stake_history: self.stake_history,
             updates: self.updates,
             extracted: true,
         };
@@ -251,6 +259,7 @@ impl StakeStore {
         }
         let mut stakestore = StakeStore {
             stakes,
+            stake_history: self.stake_history,
             updates: vec![],
             extracted: false,
         };
@@ -281,12 +290,9 @@ impl StakeStore {
 pub fn merge_program_account_in_strake_map(
     stake_map: &mut StakeMap,
     stakes_list: Vec<(Pubkey, Account)>,
-    stakehistory_list: Vec<(Pubkey, Account)>,
     last_update_slot: Slot,
     current_epoch: u64,
 ) {
-    let mut stake_history_map: HashMap<Pubkey, Account> = stakehistory_list.into_iter().collect();
-
     stakes_list
         .into_iter()
         .filter_map(
@@ -306,24 +312,9 @@ pub fn merge_program_account_in_strake_map(
                 last_update_slot,
                 write_version: 0,
             };
-            if let Some(history) = stake_history_map.remove(&stake.pubkey) {
-                log::info!(
-                    "merge_program_account_in_strake_map found stake history for account:{}",
-                    stake.pubkey
-                );
-                match read_historystake_from_account(history) {
-                    Some(history) => (),
-                    None => (),
-                }
-            }
 
             stake_map_notify_stake(stake_map, stake, current_epoch);
         });
-
-    log::info!(
-        "merge_program_account_in_strake_map history account not processed:{}",
-        stake_history_map.len()
-    );
 }
 
 pub fn read_stake_from_account_data(mut data: &[u8]) -> anyhow::Result<Option<Delegation>> {

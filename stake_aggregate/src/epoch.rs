@@ -1,7 +1,9 @@
 use crate::leader_schedule::LeaderScheduleEvent;
 use crate::Slot;
+use solana_account_decoder::parse_sysvar::SysvarAccountType;
 use solana_client::client_error::ClientError;
 use solana_client::nonblocking::rpc_client::RpcClient;
+use solana_program::epoch_schedule::EpochSchedule;
 use solana_sdk::commitment_config::{CommitmentConfig, CommitmentLevel};
 use solana_sdk::epoch_info::EpochInfo;
 use yellowstone_grpc_proto::geyser::CommitmentLevel as GeyserCommitmentLevel;
@@ -30,6 +32,27 @@ pub struct CurrentEpochSlotState {
 impl CurrentEpochSlotState {
     pub async fn bootstrap(rpc_url: String) -> Result<CurrentEpochSlotState, ClientError> {
         let rpc_client = RpcClient::new_with_commitment(rpc_url, CommitmentConfig::finalized());
+
+        //get reduce_stake_warmup_cooldown feature info.
+        //NOT AND ACCOUNT. Get from config.
+        // let reduce_stake_warmup_cooldown_epoch = rpc_client
+        //     .get_account(&feature_set::reduce_stake_warmup_cooldown::id())
+        //     .await?;
+
+        // let reduce_stake_warmup_cooldown_epoch = bincode::deserialize(&reduce_stake_warmup_cooldown_epoch.data[..])
+        //     .ok()
+        //     .map(SysvarAccountType::EpochSchedule);
+        // log::info!("reduce_stake_warmup_cooldown_epoch {reduce_stake_warmup_cooldown_epoch:?}");
+
+        //get epoch sysvar account to init epoch. More compatible with a snapshot  bootstrap.
+        let res_epoch = rpc_client
+            .get_account(&solana_sdk::sysvar::epoch_schedule::id())
+            .await?;
+        let sysvar_epoch_schedule = bincode::deserialize(&res_epoch.data[..])
+            .ok()
+            .map(SysvarAccountType::EpochSchedule);
+        log::info!("sysvar_epoch_schedule {sysvar_epoch_schedule:?}");
+
         // Fetch current epoch
         let current_epoch = rpc_client.get_epoch_info().await?;
         let next_epoch_start_slot =
