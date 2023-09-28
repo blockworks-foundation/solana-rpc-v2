@@ -12,6 +12,7 @@ use solana_sdk::stake::state::Delegation;
 use solana_sdk::stake::state::StakeState;
 use solana_sdk::stake_history::StakeHistory;
 use std::collections::HashMap;
+use std::str::FromStr;
 use tokio::sync::mpsc::Sender;
 use yellowstone_grpc_proto::solana::storage::confirmed_block::CompiledInstruction;
 
@@ -271,6 +272,21 @@ impl StakeStore {
             action.update_epoch(current_epoch);
             stakestore.process_stake_action(action);
         }
+
+        //verify one stake account to test. TODO remove
+        let stake_account = stakestore
+            .stakes
+            .get(&Pubkey::from_str("2wAVZS68P6frWqpwMu7q67A3j54RFmBjq4oH94sYi7ce").unwrap());
+        let stake = stake_account.map(|stake| {
+            stake
+                .stake
+                .stake(current_epoch, stakestore.stake_history.as_ref(), Some(0))
+        });
+        log::info!(
+            "merge_stakes 2wAVZS68P6frWqpwMu7q67A3j54RFmBjq4oH94sYi7ce:{:?}",
+            stake
+        );
+
         Ok(stakestore)
     }
 
