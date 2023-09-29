@@ -253,17 +253,21 @@ pub(crate) async fn run_server(request_tx: Sender<Requests>) -> Result<ServerHan
             .map_err(|err| format!("error during bootstrap query processing:{err}"))
             .and_then(|(accounts, slot)| {
                 println!("RPC end request status");
-                //replace pubkey with String. Json only allow distionary key with string.
-                let ret: HashMap<String, StoredVote> = accounts
-                    .into_iter()
-                    .map(|(pk, acc)| (pk.to_string(), acc))
-                    .collect();
-                serde_json::to_value((slot, ret)).map_err(|err| {
-                    format!(
-                        "error during json serialisation:{}",
-                        JsonRpcError::ParseError(err)
-                    )
-                })
+                if slot == 0 {
+                    Err("Error stake store extracted".to_string())
+                } else {
+                    //replace pubkey with String. Json only allow distionary key with string.
+                    let ret: HashMap<String, StoredVote> = accounts
+                        .into_iter()
+                        .map(|(pk, acc)| (pk.to_string(), acc))
+                        .collect();
+                    serde_json::to_value((slot, ret)).map_err(|err| {
+                        format!(
+                            "error during json serialisation:{}",
+                            JsonRpcError::ParseError(err)
+                        )
+                    })
+                }
             })
             .unwrap_or_else(|err| serde_json::Value::String(err.to_string()))
     })?;

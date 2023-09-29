@@ -133,8 +133,8 @@ impl StoredStake {
 pub struct StakeStore {
     stakes: StakeMap,
     stake_history: Option<StakeHistory>,
-    updates: Vec<ExtractedAction>,
-    extracted: bool,
+    pub updates: Vec<ExtractedAction>,
+    pub extracted: bool,
 }
 
 impl StakeStore {

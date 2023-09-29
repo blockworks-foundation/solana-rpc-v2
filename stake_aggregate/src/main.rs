@@ -11,17 +11,6 @@
   }
 '
 
-
-curl http://localhost:3000 -X POST -H "Content-Type: application/json" -d '
-  {
-    "jsonrpc": "2.0",
-    "id" : 1,
-    "method": "bootstrap_accounts",
-    "params": []
-  }
-' -o extract_stake_532_agg.json
-
-
 curl http://localhost:3000 -X POST -H "Content-Type: application/json" -d '
   {
     "jsonrpc": "2.0",
@@ -299,9 +288,21 @@ async fn run_loop<F: Interceptor>(mut client: GeyserGrpcClient<F>) -> anyhow::Re
                     }
                     crate::rpc::Requests::GetStakestore(tx) => {
                         let current_stakes = stakestore.get_cloned_stake_map();
-                        if let Err(err) = tx.send((current_stakes, current_epoch_state.current_slot.confirmed_slot)){
+                        let extract_slot = if stakestore.extracted {
+                            log::error!("Stakestore extracted:{}", stakestore.extracted);
+                            0
+                        }
+                        else if stakestore.updates.len() > 0 {
+                            log::error!("Extract with pending stake:{}", stakestore.updates.len());
+                            0
+                        } else {
+                            current_epoch_state.current_slot.confirmed_slot
+                        };
+
+                        if let Err(err) = tx.send((current_stakes, extract_slot)){
                             println!("Channel error during sending back request status error:{err:?}");
                         }
+
                         log::info!("RPC GetStakestore account send");
                     },
                     crate::rpc::Requests::GetVotestore(tx) => {
