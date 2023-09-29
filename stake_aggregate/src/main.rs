@@ -18,7 +18,7 @@ curl http://localhost:3000 -X POST -H "Content-Type: application/json" -d '
     "method": "stake_accounts",
     "params": []
   }
-' -o extract_stake_529_end.json
+' -o extract_stake_533_3.json
 
 
 curl http://localhost:3000 -X POST -H "Content-Type: application/json" -d '

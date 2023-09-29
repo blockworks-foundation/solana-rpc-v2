@@ -246,6 +246,34 @@ pub(crate) async fn run_server(request_tx: Sender<Requests>) -> Result<ServerHan
     module.register_async_method("stake_accounts", |_params, request_tx| async move {
         log::trace!("RPC bootstrap_accounts");
         let (tx, rx) = oneshot::channel();
+        if let Err(err) = request_tx.send(Requests::GetStakestore(tx)).await {
+            return serde_json::Value::String(format!("error during query processing:{err}",));
+        }
+        rx.await
+            .map_err(|err| format!("error during bootstrap query processing:{err}"))
+            .and_then(|(accounts, slot)| {
+                println!("RPC end request status");
+                if slot == 0 {
+                    Err("Error stake store extracted".to_string())
+                } else {
+                    //replace pubkey with String. Json only allow distionary key with string.
+                    let ret: HashMap<String, StoredStake> = accounts
+                        .into_iter()
+                        .map(|(pk, acc)| (pk.to_string(), acc))
+                        .collect();
+                    serde_json::to_value((slot, ret)).map_err(|err| {
+                        format!(
+                            "error during json serialisation:{}",
+                            JsonRpcError::ParseError(err)
+                        )
+                    })
+                }
+            })
+            .unwrap_or_else(|err| serde_json::Value::String(err.to_string()))
+    })?;
+    module.register_async_method("vote_accounts", |_params, request_tx| async move {
+        log::trace!("RPC bootstrap_accounts");
+        let (tx, rx) = oneshot::channel();
         if let Err(err) = request_tx.send(Requests::GetVotestore(tx)).await {
             return serde_json::Value::String(format!("error during query processing:{err}",));
         }

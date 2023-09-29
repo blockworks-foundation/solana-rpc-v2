@@ -51,28 +51,17 @@ fn stake_map_notify_stake(map: &mut StakeMap, stake: StoredStake, current_epoch:
                                                 //doesn't erase new state with an old one. Can arrive during bootstrapping.
                                                 //several instructions can be done in the same slot.
             if strstake.last_update_slot <= stake.last_update_slot {
-                if stake.is_removed(current_epoch) {
-                    log::info!(
-                        "stake_map_notify_stake Stake store remove stake: {} stake:{stake:?} current_epoch:{current_epoch}",
-                        stake.pubkey
-                    );
-                    //TODO activate when remove algo is validated.
-                    //map.remove(&stake.pubkey);
-                } else {
-                    log::info!("stake_map_notify_stake Stake store updated stake: {} old_stake:{strstake:?} stake:{stake:?}", stake.pubkey);
-                    *strstake = stake;
-                }
+                log::info!("stake_map_notify_stake Stake store updated stake: {} old_stake:{strstake:?} stake:{stake:?}", stake.pubkey);
+                *strstake = stake;
             }
         }
         // If value doesn't exist yet, then insert a new value of 1
         std::collections::hash_map::Entry::Vacant(vacant) => {
-            if stake.is_inserted(current_epoch) {
-                log::info!(
-                    "stake_map_notify_stake Stake store insert stake: {} stake:{stake:?}",
-                    stake.pubkey
-                );
-                vacant.insert(stake);
-            }
+            log::info!(
+                "stake_map_notify_stake Stake store insert stake: {} stake:{stake:?}",
+                stake.pubkey
+            );
+            vacant.insert(stake);
         }
     };
 }
@@ -119,16 +108,16 @@ pub struct StoredStake {
     pub write_version: u64,
 }
 
-impl StoredStake {
-    fn is_removed(&self, current_epoch: u64) -> bool {
-        self.stake.activation_epoch != crate::leader_schedule::MAX_EPOCH_VALUE
-            && self.stake.deactivation_epoch < current_epoch
-    }
-    fn is_inserted(&self, current_epoch: u64) -> bool {
-        self.stake.activation_epoch == crate::leader_schedule::MAX_EPOCH_VALUE
-            || self.stake.deactivation_epoch >= current_epoch
-    }
-}
+// impl StoredStake {
+//     fn is_removed(&self, current_epoch: u64) -> bool {
+//         self.stake.activation_epoch != crate::leader_schedule::MAX_EPOCH_VALUE
+//             && self.stake.deactivation_epoch < current_epoch
+//     }
+//     fn is_inserted(&self, current_epoch: u64) -> bool {
+//         self.stake.activation_epoch == crate::leader_schedule::MAX_EPOCH_VALUE
+//             || self.stake.deactivation_epoch >= current_epoch
+//     }
+// }
 #[derive(Debug, Default)]
 pub struct StakeStore {
     stakes: StakeMap,
