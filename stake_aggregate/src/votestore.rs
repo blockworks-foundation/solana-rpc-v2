@@ -160,24 +160,35 @@ pub fn merge_program_account_in_vote_map(
         });
 }
 
-fn vote_map_insert_vote(map: &mut VoteMap, vote_account: Pubkey, vote_data: StoredVote) {
-    match map.entry(vote_account) {
+fn vote_map_insert_vote(map: &mut VoteMap, vote_account_pk: Pubkey, vote_data: StoredVote) {
+    match map.entry(vote_account_pk) {
         std::collections::hash_map::Entry::Occupied(occupied) => {
             let voteacc = occupied.into_mut(); // <-- get mut reference to existing value
             if voteacc.last_update_slot <= vote_data.last_update_slot {
-                log::info!(
-                    "Vote updated for: {vote_account} node_id:{} root_slot:{:?}",
-                    vote_data.vote_data.node_pubkey,
-                    vote_data.vote_data.root_slot,
-                );
+                // generate a lot of trace log::trace!(
+                //     "Vote updated for: {vote_account_pk} node_id:{} root_slot:{:?}",
+                //     vote_data.vote_data.node_pubkey,
+                //     vote_data.vote_data.root_slot,
+                // );
+                if vote_data.vote_data.root_slot.is_none() {
+                    log::info!("Update vote account:{vote_account_pk} with None root slot.");
+                }
+
+                if voteacc.vote_data.root_slot.is_none() {
+                    log::info!(
+                        "Update vote account:{vote_account_pk} that were having None root slot."
+                    );
+                }
+
                 *voteacc = vote_data;
             }
         }
         // If value doesn't exist yet, then insert a new value of 1
         std::collections::hash_map::Entry::Vacant(vacant) => {
             log::info!(
-                "New Vote added for: {vote_account} node_id:{}",
-                vote_data.vote_data.node_pubkey
+                "New Vote added for: {vote_account_pk} node_id:{}, root slot:{:?}",
+                vote_data.vote_data.node_pubkey,
+                vote_data.vote_data.root_slot,
             );
             vacant.insert(vote_data);
         }
