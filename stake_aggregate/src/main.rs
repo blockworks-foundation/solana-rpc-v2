@@ -395,9 +395,11 @@ async fn run_loop<F: Interceptor>(mut client: GeyserGrpcClient<F>) -> anyhow::Re
                                                     }
                                                 }
                                                 solana_sdk::vote::program::ID => {
+                                                    log::info!("Geyser notif VOTE account:{}", account);
+                                                    let account_pubkey = account.pubkey;
                                                     //process vote accout notification
                                                     if let Err(err) = votestore.add_vote(account, current_epoch_state.current_epoch_end_slot()) {
-                                                        log::warn!("Can't add new stake from account data err:{}", err);
+                                                        log::warn!("Can't add new stake from account data err:{} account:{}", err, account_pubkey);
                                                         continue;
                                                     }
                                                 }

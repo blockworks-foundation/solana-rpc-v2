@@ -164,10 +164,11 @@ fn vote_map_insert_vote(map: &mut VoteMap, vote_account: Pubkey, vote_data: Stor
     match map.entry(vote_account) {
         std::collections::hash_map::Entry::Occupied(occupied) => {
             let voteacc = occupied.into_mut(); // <-- get mut reference to existing value
-            if voteacc.last_update_slot < vote_data.last_update_slot {
-                log::trace!(
-                    "Vote updated for: {vote_account} node_id:{}",
-                    vote_data.vote_data.node_pubkey
+            if voteacc.last_update_slot <= vote_data.last_update_slot {
+                log::info!(
+                    "Vote updated for: {vote_account} node_id:{} root_slot:{:?}",
+                    vote_data.vote_data.node_pubkey,
+                    vote_data.vote_data.root_slot,
                 );
                 *voteacc = vote_data;
             }

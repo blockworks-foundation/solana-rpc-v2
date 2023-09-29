@@ -296,9 +296,6 @@ fn calculate_leader_schedule_from_stake_map(
 
     //log::trace!("calculate_leader_schedule_from_stake_map stake_map:{stake_map:?} current_epoch_info:{current_epoch_info:?}");
     for storestake in stake_map.values() {
-        //log::info!("Program_accounts stake:{stake:#?}");
-        //        if is_stake_to_add(storestake.pubkey, &storestake.stake, &current_epoch_info) {
-        // Add the stake in this stake account to the total for the delegated-to vote account
         //get nodeid for vote account
         let Some(vote_account) = vote_map.get(&storestake.stake.voter_pubkey) else {
             log::warn!(
@@ -312,10 +309,16 @@ fn calculate_leader_schedule_from_stake_map(
         //on testnet the vote account CY7gjryUPV6Pwbsn4aArkMBL7HSaRHB8sPZUvhw558Tm node_id:6YpwLjgXcMWAj29govWQr87kaAGKS7CnoqWsEDJE4h8P
         //hasn't vote since a long time but still return on RPC call get_voteaccounts.
         //the validator don't use it for leader schedule.
-        if vote_account.vote_data.root_slot.unwrap_or(0)
-            < current_epoch_info
-                .absolute_slot
-                .saturating_sub(ten_epoch_slot_long)
+        if vote_account.vote_data.root_slot.unwrap_or_else(|| {
+            //vote with no root_slot are added. They have just been activated and can have active stake- TODO TO TEST.
+            log::info!(
+                "leader schedule vote:{} with None root_slot, add it",
+                vote_account.pubkey
+            );
+            current_epoch_info.absolute_slot
+        }) < current_epoch_info
+            .absolute_slot
+            .saturating_sub(ten_epoch_slot_long)
         {
             log::warn!("Vote account:{} nodeid:{} that hasn't vote since 10 epochs. Stake for account:{:?}. Remove leader_schedule."
                     , storestake.stake.voter_pubkey
@@ -324,14 +327,22 @@ fn calculate_leader_schedule_from_stake_map(
                     , storestake.stake.stake(current_epoch_info.epoch, stake_history, Some(0)),
                 );
         } else {
-            *(stakes
-                .entry(vote_account.vote_data.node_pubkey)
-                .or_insert(0)) += storestake
+            let effective_stake = storestake
                 .stake
                 //TODO us the right reduce_stake_warmup_cooldown_epoch value from validator feature.
                 .stake(current_epoch_info.epoch, stake_history, Some(0));
+            //only vote account with positive stake are use for the schedule.
+            if effective_stake > 0 {
+                *(stakes
+                    .entry(vote_account.vote_data.node_pubkey)
+                    .or_insert(0)) += effective_stake;
+            } else {
+                log::info!(
+                    "leader schedule vote:{} with 0 effective vote",
+                    storestake.stake.voter_pubkey
+                );
+            }
         }
-        //        }
     }
 
     let mut schedule_stakes: Vec<(Pubkey, u64)> = vec![];
