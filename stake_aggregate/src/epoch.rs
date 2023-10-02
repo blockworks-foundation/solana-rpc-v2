@@ -73,6 +73,7 @@ impl CurrentEpochSlotState {
     pub fn current_epoch_end_slot(&self) -> Slot {
         self.next_epoch_start_slot - 1
     }
+
     pub fn process_new_slot(
         &mut self,
         new_slot: &SubscribeUpdateSlot,
@@ -94,7 +95,11 @@ impl CurrentEpochSlotState {
                 let mut diff = new_slot.slot - self.current_slot.confirmed_slot;
                 //First epoch slot, index is 0 so remove 1 from diff.
                 if self.first_epoch_slot {
-                    change_epoch(&mut self.current_epoch, new_slot.slot);
+                    //calculate next epoch data
+                    self.current_epoch.epoch += 1;
+                    //slot can be non consecutif, use diff.
+                    self.current_epoch.slot_index = 0;
+                    self.current_epoch.absolute_slot = new_slot.slot;
                     log::info!(
                         "change_epoch calculated next epoch:{:?} at slot:{}",
                         self.current_epoch,
@@ -140,23 +145,15 @@ impl CurrentEpochSlotState {
             self.first_epoch_slot = true;
 
             //start leader schedule calculus
-            //switch to next epoch to calculate schedule at next epoch.
-            let mut schedule_epoch = self.current_epoch.clone();
-            change_epoch(&mut schedule_epoch, self.current_slot.confirmed_slot);
+            //switch to 2 next epoch to calculate schedule at next epoch.
+            //at current epoch change the schedule is calculated for the next epoch.
+            let schedule_epoch = crate::leader_schedule::next_schedule_epoch(&self.current_epoch);
+            let schedule_epoch = crate::leader_schedule::next_schedule_epoch(&schedule_epoch);
             Some(LeaderScheduleEvent::InitLeaderschedule(schedule_epoch))
         } else {
             None
         }
     }
-}
-
-fn change_epoch(current_epoch: &mut EpochInfo, current_slot: Slot) {
-    current_epoch.epoch += 1;
-    //slot can be non consecutif, use diff.
-    current_epoch.slot_index = current_epoch
-        .slot_index
-        .saturating_sub(current_epoch.slots_in_epoch);
-    current_epoch.absolute_slot = current_slot;
 }
 
 #[derive(Default, Debug, Clone)]

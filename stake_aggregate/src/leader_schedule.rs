@@ -21,7 +21,7 @@ use std::time::Duration;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::task::JoinHandle;
 
-const SCHEDULE_STAKE_BASE_FILE_NAME: &str = "aggregate_export_votestake_";
+const SCHEDULE_STAKE_BASE_FILE_NAME: &str = "aggregate_export_votestake";
 
 pub const MAX_EPOCH_VALUE: u64 = 18446744073709551615;
 
@@ -55,6 +55,15 @@ impl From<SavedStake> for EpochStake {
                 .collect(),
         }
     }
+}
+
+pub fn next_schedule_epoch(current_epoch: &EpochInfo) -> EpochInfo {
+    let mut next_epoch_info = current_epoch.clone();
+    next_epoch_info.epoch += 1;
+    next_epoch_info.slot_index = 0;
+    next_epoch_info.absolute_slot =
+        current_epoch.absolute_slot + current_epoch.slots_in_epoch - current_epoch.slot_index;
+    next_epoch_info
 }
 
 pub fn bootstrap_leader_schedule(
