@@ -259,6 +259,9 @@ async fn run_loop<F: Interceptor>(mut client: GeyserGrpcClient<F>) -> anyhow::Re
     let mut stake_verification_sender =
         crate::stakestore::start_stake_verification_loop(RPC_URL.to_string()).await;
 
+    //TODO remove. Store parent hash to see if we don't miss a block.
+    let mut parent_block_slot = None;
+
     loop {
         tokio::select! {
             Some(req) = request_rx.recv() => {
@@ -447,7 +450,29 @@ async fn run_loop<F: Interceptor>(mut client: GeyserGrpcClient<F>) -> anyhow::Re
                                         log::info!("Receive Block Meta at slot: {}", block_meta.slot);
                                     }
                                     Some(UpdateOneof::Block(block)) => {
-                                        log::trace!("Receive Block at slot: {}", block.slot);
+                                        log::trace!("Receive Block at slot: {} hash:{} parent_slot:{}",
+                                            block.slot,
+                                            block.blockhash,
+                                            block.parent_slot,
+                                        );
+
+                                        //TODO remove; Detect missing block
+                                        if let Some(parent_block_slot) = parent_block_slot {
+                                            if parent_block_slot != block.parent_slot {
+                                                log::error!("Bad parent slot stored:{} block:{}, miss a block"
+                                                    ,parent_block_slot,block.parent_slot
+                                                );
+                                            }
+                                        }
+                                        if current_epoch_state.current_slot.processed_slot != block.slot {
+                                            log::error!("Receive a block with a slot:{} which is not the current process slot:{},  miss a slot",
+                                                block.slot,
+                                                current_epoch_state.current_slot.processed_slot,
+                                            );
+                                        }
+
+                                        parent_block_slot = Some(block.slot);
+
                                         //parse to detect stake merge tx.
                                         //first in the main thread then in a specific thread.
                                         let stake_public_key: Vec<u8> = solana_sdk::stake::program::id().to_bytes().to_vec();
