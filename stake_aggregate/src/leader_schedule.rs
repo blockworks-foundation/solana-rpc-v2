@@ -209,12 +209,17 @@ fn process_leadershedule_event(
             //TODO get a way to be updated of stake history.
             //request the current state using RPC.
             //TODO remove the await from the scheduler task.
+            let before_stake_histo = stake_history.clone();
             let stake_history = crate::bootstrap::get_stakehistory_account(rpc_url)
                 .map(|account| crate::stakestore::read_historystake_from_account(account))
                 .unwrap_or_else(|_| {
                     log::error!("Error during stake history fetch. Use bootstrap one");
                     stake_history
                 });
+            log::info!(
+                "stake_hsitorique epoch{} before:{before_stake_histo:?} after:{stake_history:?}",
+                schedule_epoch.epoch
+            );
             match (extract_stakestore(stakestore), extract_votestore(votestore)) {
                 (Ok(stake_map), Ok(vote_map)) => {
                     LeaderScheduleResult::Event(LeaderScheduleEvent::CalculateScedule(
@@ -297,6 +302,58 @@ fn process_leadershedule_event(
         }
     }
 }
+
+// fn calculate_epoch_stakes(stake_map: &StakeMap) {
+//         let stake_history_entry =
+
+//             let stake_delegations: Vec<_> = self.stake_delegations.values().collect();
+//         // Wrap up the prev epoch by adding new stake history entry for the
+//         // prev epoch.
+//         let stake_history_entry = thread_pool.install(|| {
+//             stake_delegations
+//                 .par_iter()
+//                 .fold(StakeActivationStatus::default, |acc, stake_account| {
+//                     let delegation = stake_account.delegation();
+//                     acc + delegation.stake_activating_and_deactivating(
+//                         self.epoch,
+//                         Some(&self.stake_history),
+//                         new_rate_activation_epoch,
+//                     )
+//                 })
+//                 .reduce(StakeActivationStatus::default, Add::add)
+//         });
+//         self.stake_history.add(self.epoch, stake_history_entry);
+//         self.epoch = next_epoch;
+//         // Refresh the stake distribution of vote accounts for the next epoch,
+//         // using new stake history.
+//         let delegated_stakes = thread_pool.install(|| {
+//             stake_delegations
+//                 .par_iter()
+//                 .fold(HashMap::default, |mut delegated_stakes, stake_account| {
+//                     let delegation = stake_account.delegation();
+//                     let entry = delegated_stakes.entry(delegation.voter_pubkey).or_default();
+//                     *entry += delegation.stake(
+//                         self.epoch,
+//                         Some(&self.stake_history),
+//                         new_rate_activation_epoch,
+//                     );
+//                     delegated_stakes
+//                 })
+//                 .reduce(HashMap::default, merge)
+//         });
+//         self.vote_accounts = self
+//             .vote_accounts
+//             .iter()
+//             .map(|(&vote_pubkey, vote_account)| {
+//                 let delegated_stake = delegated_stakes
+//                     .get(&vote_pubkey)
+//                     .copied()
+//                     .unwrap_or_default();
+//                 (vote_pubkey, (delegated_stake, vote_account.clone()))
+//             })
+//             .collect();
+
+// }
 
 fn calculate_leader_schedule_from_stake_map(
     stake_map: &crate::stakestore::StakeMap,
