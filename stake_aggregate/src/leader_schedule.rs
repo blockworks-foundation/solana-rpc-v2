@@ -23,7 +23,7 @@ use tokio::task::JoinHandle;
 
 const SCHEDULE_STAKE_BASE_FILE_NAME: &str = "aggregate_export_votestake";
 
-pub const MAX_EPOCH_VALUE: u64 = 18446744073709551615;
+//pub const MAX_EPOCH_VALUE: u64 = 18446744073709551615;
 
 #[derive(Debug, Default)]
 pub struct CalculatedSchedule {
@@ -152,6 +152,7 @@ InitLeaderscedule        MergeStore(stakes, votes, schedule)
 */
 
 pub fn run_leader_schedule_events(
+    rpc_url: String,
     event: LeaderScheduleEvent,
     bootstrap_tasks: &mut FuturesUnordered<JoinHandle<LeaderScheduleEvent>>,
     stakestore: &mut StakeStore,
@@ -160,14 +161,14 @@ pub fn run_leader_schedule_events(
     anyhow::Result<(HashMap<String, Vec<usize>>, Vec<(Pubkey, u64)>)>,
     EpochInfo,
 )> {
-    let result = process_leadershedule_event(event, stakestore, votestore);
+    let result = process_leadershedule_event(rpc_url.clone(), event, stakestore, votestore);
     match result {
         LeaderScheduleResult::TaskHandle(jh) => {
             bootstrap_tasks.push(jh);
             None
         }
         LeaderScheduleResult::Event(event) => {
-            run_leader_schedule_events(event, bootstrap_tasks, stakestore, votestore)
+            run_leader_schedule_events(rpc_url, event, bootstrap_tasks, stakestore, votestore)
         }
         LeaderScheduleResult::End(schedule, epoch) => Some((schedule, epoch)),
     }
@@ -195,6 +196,7 @@ enum LeaderScheduleResult {
 
 //TODO remove desactivated account after leader schedule calculus.
 fn process_leadershedule_event(
+    rpc_url: String,
     event: LeaderScheduleEvent,
     stakestore: &mut StakeStore,
     votestore: &mut VoteStore,
@@ -204,6 +206,15 @@ fn process_leadershedule_event(
             log::info!("LeaderScheduleEvent::InitLeaderschedule RECV");
             //For test TODO put in extract and restore process to avoid to clone.
             let stake_history = stakestore.get_cloned_stake_history();
+            //TODO get a way to be updated of stake history.
+            //request the current state using RPC.
+            //TODO remove the await from the scheduler task.
+            let stake_history = crate::bootstrap::get_stakehistory_account(rpc_url)
+                .map(|account| crate::stakestore::read_historystake_from_account(account))
+                .unwrap_or_else(|_| {
+                    log::error!("Error during stake history fetch. Use bootstrap one");
+                    stake_history
+                });
             match (extract_stakestore(stakestore), extract_votestore(votestore)) {
                 (Ok(stake_map), Ok(vote_map)) => {
                     LeaderScheduleResult::Event(LeaderScheduleEvent::CalculateScedule(
@@ -307,7 +318,7 @@ fn calculate_leader_schedule_from_stake_map(
     for storestake in stake_map.values() {
         //get nodeid for vote account
         let Some(vote_account) = vote_map.get(&storestake.stake.voter_pubkey) else {
-            log::warn!(
+            log::info!(
                 "Vote account not found in vote map for stake vote account:{}",
                 &storestake.stake.voter_pubkey
             );
@@ -329,7 +340,7 @@ fn calculate_leader_schedule_from_stake_map(
             .absolute_slot
             .saturating_sub(ten_epoch_slot_long)
         {
-            log::warn!("Vote account:{} nodeid:{} that hasn't vote since 10 epochs. Stake for account:{:?}. Remove leader_schedule."
+            log::info!("Vote account:{} nodeid:{} that hasn't vote since 10 epochs. Stake for account:{:?}. Remove leader_schedule."
                     , storestake.stake.voter_pubkey
                     ,vote_account.vote_data.node_pubkey
                     //TODO us the right reduce_stake_warmup_cooldown_epoch value from validator feature.

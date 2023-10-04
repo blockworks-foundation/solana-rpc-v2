@@ -3,7 +3,6 @@ use crate::Slot;
 use solana_account_decoder::parse_sysvar::SysvarAccountType;
 use solana_client::client_error::ClientError;
 use solana_client::nonblocking::rpc_client::RpcClient;
-use solana_program::epoch_schedule::EpochSchedule;
 use solana_sdk::commitment_config::{CommitmentConfig, CommitmentLevel};
 use solana_sdk::epoch_info::EpochInfo;
 use yellowstone_grpc_proto::geyser::CommitmentLevel as GeyserCommitmentLevel;
@@ -45,6 +44,7 @@ impl CurrentEpochSlotState {
         // log::info!("reduce_stake_warmup_cooldown_epoch {reduce_stake_warmup_cooldown_epoch:?}");
 
         //get epoch sysvar account to init epoch. More compatible with a snapshot  bootstrap.
+        //sysvar_epoch_schedule Some(EpochSchedule(EpochSchedule { slots_per_epoch: 100, leader_schedule_slot_offset: 100, warmup: false, first_normal_epoch: 0, first_normal_slot: 0 }))
         let res_epoch = rpc_client
             .get_account(&solana_sdk::sysvar::epoch_schedule::id())
             .await?;

@@ -330,6 +330,7 @@ async fn run_loop<F: Interceptor>(mut client: GeyserGrpcClient<F>) -> anyhow::Re
             //Manage RPC call result execution
             Some(Ok(event)) = spawned_leader_schedule_task.next() =>  {
                 if let Some((new_schedule, epoch)) = crate::leader_schedule::run_leader_schedule_events(
+                    RPC_URL.to_string(),
                     event,
                     &mut spawned_leader_schedule_task,
                     &mut stakestore,
@@ -432,6 +433,7 @@ async fn run_loop<F: Interceptor>(mut client: GeyserGrpcClient<F>) -> anyhow::Re
                                         if bootstrap_data.done {
                                             if let Some(init_event) = schedule_event {
                                                 crate::leader_schedule::run_leader_schedule_events(
+                                                    RPC_URL.to_string(),
                                                     init_event,
                                                     &mut spawned_leader_schedule_task,
                                                     &mut stakestore,
