@@ -464,12 +464,6 @@ async fn run_loop<F: Interceptor>(mut client: GeyserGrpcClient<F>) -> anyhow::Re
                                                 );
                                             }
                                         }
-                                        if current_epoch_state.current_slot.processed_slot != block.slot {
-                                            log::error!("Receive a block with a slot:{} which is not the current process slot:{},  miss a slot",
-                                                block.slot,
-                                                current_epoch_state.current_slot.processed_slot,
-                                            );
-                                        }
 
                                         parent_block_slot = Some(block.slot);
 
