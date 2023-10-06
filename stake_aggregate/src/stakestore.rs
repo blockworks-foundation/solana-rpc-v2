@@ -12,13 +12,14 @@ use solana_sdk::stake::state::Delegation;
 use solana_sdk::stake::state::StakeState;
 use solana_sdk::stake_history::StakeHistory;
 use std::collections::HashMap;
-use std::str::FromStr;
 use tokio::sync::mpsc::Sender;
 use yellowstone_grpc_proto::solana::storage::confirmed_block::CompiledInstruction;
 
 pub type StakeMap = HashMap<Pubkey, StoredStake>;
 
-pub fn extract_stakestore(stakestore: &mut StakeStore) -> anyhow::Result<StakeMap> {
+pub fn extract_stakestore(
+    stakestore: &mut StakeStore,
+) -> anyhow::Result<(StakeMap, Option<StakeHistory>)> {
     let new_store = std::mem::take(stakestore);
     let (new_store, stake_map) = new_store.extract()?;
     *stakestore = new_store;
@@ -28,21 +29,15 @@ pub fn extract_stakestore(stakestore: &mut StakeStore) -> anyhow::Result<StakeMa
 pub fn merge_stakestore(
     stakestore: &mut StakeStore,
     stake_map: StakeMap,
-    current_epoch: u64,
+    stake_history: Option<StakeHistory>,
 ) -> anyhow::Result<()> {
     let new_store = std::mem::take(stakestore);
-    let new_store = new_store.merge_stakes(stake_map, current_epoch)?;
+    let new_store = new_store.merge_stakes(stake_map, stake_history)?;
     *stakestore = new_store;
     Ok(())
 }
 
-fn stake_map_notify_stake(map: &mut StakeMap, stake: StoredStake, current_epoch: u64) {
-    //don't add stake that are already desactivated.
-    //there's some stran,ge stake that has activeate_epock = max epoch and desactivate ecpock 90 that are taken into account.
-    //Must be better defined.
-    // if stake.stake.deactivation_epoch < current_epoch {
-    //     return;
-    // }
+fn stake_map_notify_stake(map: &mut StakeMap, stake: StoredStake) {
     //log::info!("stake_map_notify_stake stake:{stake:?}");
     match map.entry(stake.pubkey) {
         // If value already exists, then increment it by one
@@ -70,7 +65,6 @@ fn stake_map_notify_stake(map: &mut StakeMap, stake: StoredStake, current_epoch:
 pub enum ExtractedAction {
     Notify {
         stake: StoredStake,
-        current_epoch: u64,
     },
     Remove(Pubkey, Slot),
     Merge {
@@ -85,16 +79,10 @@ pub enum ExtractedAction {
 impl ExtractedAction {
     fn get_update_slot(&self) -> u64 {
         match self {
-            ExtractedAction::Notify { stake, .. } => stake.last_update_slot,
+            ExtractedAction::Notify { stake } => stake.last_update_slot,
             ExtractedAction::Remove(_, slot) => *slot,
             ExtractedAction::Merge { update_slot, .. } => *update_slot,
             ExtractedAction::None => 0,
-        }
-    }
-
-    fn update_epoch(&mut self, epoch: u64) {
-        if let ExtractedAction::Notify { current_epoch, .. } = self {
-            *current_epoch = epoch;
         }
     }
 }
@@ -108,16 +96,6 @@ pub struct StoredStake {
     pub write_version: u64,
 }
 
-// impl StoredStake {
-//     fn is_removed(&self, current_epoch: u64) -> bool {
-//         self.stake.activation_epoch != crate::leader_schedule::MAX_EPOCH_VALUE
-//             && self.stake.deactivation_epoch < current_epoch
-//     }
-//     fn is_inserted(&self, current_epoch: u64) -> bool {
-//         self.stake.activation_epoch == crate::leader_schedule::MAX_EPOCH_VALUE
-//             || self.stake.deactivation_epoch >= current_epoch
-//     }
-// }
 #[derive(Debug, Default)]
 pub struct StakeStore {
     stakes: StakeMap,
@@ -136,8 +114,12 @@ impl StakeStore {
         }
     }
 
-    pub fn set_stake_history(&mut self, stake_history: StakeHistory) {
-        self.stake_history = Some(stake_history);
+    // pub fn set_stake_history(&mut self, stake_history: StakeHistory) {
+    //     self.stake_history = Some(Arc::new(stake_history));
+    // }
+
+    pub fn get_stake_history(&self) -> Option<StakeHistory> {
+        self.stake_history.clone()
     }
 
     pub fn nb_stake_account(&self) -> usize {
@@ -147,48 +129,29 @@ impl StakeStore {
     pub fn get_cloned_stake_map(&self) -> StakeMap {
         self.stakes.clone()
     }
-    pub fn get_cloned_stake_history(&self) -> Option<StakeHistory> {
-        self.stake_history.clone()
-    }
 
     pub fn notify_stake_change(
         &mut self,
-        new_account: AccountPretty,
+        account: AccountPretty,
         current_end_epoch_slot: Slot,
-        current_epoch: u64,
     ) -> anyhow::Result<()> {
-        let Ok(delegated_stake_opt) = new_account.read_stake() else {
-            bail!("Can't read stake from account data");
-        };
-
-        if let Some(delegated_stake) = delegated_stake_opt {
-            let stake = StoredStake {
-                pubkey: new_account.pubkey,
-                lamports: new_account.lamports,
-                stake: delegated_stake,
-                last_update_slot: new_account.slot,
-                write_version: new_account.write_version,
+        if account.lamports == 0 {
+        } else {
+            let Ok(delegated_stake_opt) = account.read_stake() else {
+                bail!("Can't read stake from account data");
             };
 
-            self.notify_stake_action(
-                ExtractedAction::Notify {
-                    stake,
-                    current_epoch,
-                },
-                current_end_epoch_slot,
-            );
+            if let Some(delegated_stake) = delegated_stake_opt {
+                let stake = StoredStake {
+                    pubkey: account.pubkey,
+                    lamports: account.lamports,
+                    stake: delegated_stake,
+                    last_update_slot: account.slot,
+                    write_version: account.write_version,
+                };
 
-            //during extract push the new update or
-            //don't insertnow account change that has been done in next epoch.
-            //put in update pool to be merged next epoch change.
-            // let insert_stake = !self.extracted || ststake.last_update_slot > current_end_epoch_slot;
-            // match insert_stake {
-            //     false => self.updates.push(ExtractedAction::Notify {
-            //         stake_account: new_account.pubkey,
-            //         stake: ststake,
-            //     }),
-            //     true => self.notify_stake(new_account.pubkey, ststake, current_epoch),
-            // }
+                self.notify_stake_action(ExtractedAction::Notify { stake }, current_end_epoch_slot);
+            }
         }
 
         Ok(())
@@ -206,11 +169,8 @@ impl StakeStore {
 
     fn process_stake_action(&mut self, action: ExtractedAction) {
         match action {
-            ExtractedAction::Notify {
-                stake,
-                current_epoch,
-            } => {
-                stake_map_notify_stake(&mut self.stakes, stake, current_epoch);
+            ExtractedAction::Notify { stake } => {
+                stake_map_notify_stake(&mut self.stakes, stake);
             }
             ExtractedAction::Remove(account_pk, slot) => self.remove_from_store(&account_pk, slot),
             //not use currently. TODO remove.
@@ -229,27 +189,31 @@ impl StakeStore {
     //return the contained stake map to do an external update.
     // During extract period (between extract and merge) added stake a stored to be processed later.
     //if the store is already extracted return an error.
-    fn extract(self) -> anyhow::Result<(Self, StakeMap)> {
+    fn extract(self) -> anyhow::Result<(Self, (StakeMap, Option<StakeHistory>))> {
         if self.extracted {
             bail!("StakeStore already extracted. Try later");
         }
         let stakestore = StakeStore {
             stakes: HashMap::new(),
-            stake_history: self.stake_history,
+            stake_history: None,
             updates: self.updates,
             extracted: true,
         };
-        Ok((stakestore, self.stakes))
+        Ok((stakestore, (self.stakes, self.stake_history)))
     }
 
     //Merge the stake map an,d replace the current one.
-    fn merge_stakes(mut self, stakes: StakeMap, current_epoch: u64) -> anyhow::Result<Self> {
+    fn merge_stakes(
+        mut self,
+        stakes: StakeMap,
+        stake_history: Option<StakeHistory>,
+    ) -> anyhow::Result<Self> {
         if !self.extracted {
             bail!("StakeStore merge of non extracted map. Try later");
         }
         let mut stakestore = StakeStore {
             stakes,
-            stake_history: self.stake_history,
+            stake_history,
             updates: vec![],
             extracted: false,
         };
@@ -257,24 +221,23 @@ impl StakeStore {
         self.updates
             .sort_unstable_by(|a, b| a.get_update_slot().cmp(&b.get_update_slot()));
         //apply stake added during extraction.
-        for mut action in self.updates {
-            action.update_epoch(current_epoch);
+        for action in self.updates {
             stakestore.process_stake_action(action);
         }
 
         //verify one stake account to test. TODO remove
-        let stake_account = stakestore
-            .stakes
-            .get(&Pubkey::from_str("2wAVZS68P6frWqpwMu7q67A3j54RFmBjq4oH94sYi7ce").unwrap());
-        let stake = stake_account.map(|stake| {
-            stake
-                .stake
-                .stake(current_epoch, stakestore.stake_history.as_ref(), Some(0))
-        });
-        log::info!(
-            "merge_stakes 2wAVZS68P6frWqpwMu7q67A3j54RFmBjq4oH94sYi7ce:{:?}",
-            stake
-        );
+        // let stake_account = stakestore
+        //     .stakes
+        //     .get(&Pubkey::from_str("2wAVZS68P6frWqpwMu7q67A3j54RFmBjq4oH94sYi7ce").unwrap());
+        // let stake = stake_account.map(|stake| {
+        //     stake
+        //         .stake
+        //         .stake(current_epoch, stakestore.stake_history.as_ref(), Some(0))
+        // });
+        // log::info!(
+        //     "merge_stakes 2wAVZS68P6frWqpwMu7q67A3j54RFmBjq4oH94sYi7ce:{:?}",
+        //     stake
+        // );
 
         Ok(stakestore)
     }
@@ -296,7 +259,6 @@ pub fn merge_program_account_in_strake_map(
     stake_map: &mut StakeMap,
     stakes_list: Vec<(Pubkey, Account)>,
     last_update_slot: Slot,
-    current_epoch: u64,
 ) {
     stakes_list
         .into_iter()
@@ -318,7 +280,7 @@ pub fn merge_program_account_in_strake_map(
                 write_version: 0,
             };
 
-            stake_map_notify_stake(stake_map, stake, current_epoch);
+            stake_map_notify_stake(stake_map, stake);
         });
 }
 

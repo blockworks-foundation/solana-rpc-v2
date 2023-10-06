@@ -6,8 +6,9 @@ use solana_sdk::account::Account;
 use solana_sdk::pubkey::Pubkey;
 use solana_sdk::vote::state::VoteState;
 use std::collections::HashMap;
+use std::sync::Arc;
 
-pub type VoteMap = HashMap<Pubkey, StoredVote>;
+pub type VoteMap = HashMap<Pubkey, Arc<StoredVote>>;
 
 //Copy the solana_rpc_client_api::response::RpcVoteAccountInfo struct
 //to avoid to add a dep to solana_rpc_client that create
@@ -180,7 +181,7 @@ fn vote_map_insert_vote(map: &mut VoteMap, vote_account_pk: Pubkey, vote_data: S
                     );
                 }
 
-                *voteacc = vote_data;
+                *voteacc = Arc::new(vote_data);
             }
         }
         // If value doesn't exist yet, then insert a new value of 1
@@ -190,7 +191,7 @@ fn vote_map_insert_vote(map: &mut VoteMap, vote_account_pk: Pubkey, vote_data: S
                 vote_data.vote_data.node_pubkey,
                 vote_data.vote_data.root_slot,
             );
-            vacant.insert(vote_data);
+            vacant.insert(Arc::new(vote_data));
         }
     };
 }

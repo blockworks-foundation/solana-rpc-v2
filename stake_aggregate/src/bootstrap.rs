@@ -1,12 +1,12 @@
 use crate::stakestore::{extract_stakestore, merge_stakestore, StakeMap, StakeStore};
 use crate::votestore::{extract_votestore, merge_votestore, VoteMap, VoteStore};
-use crate::Slot;
 use futures_util::stream::FuturesUnordered;
 use solana_client::client_error::ClientError;
 use solana_client::rpc_client::RpcClient;
 use solana_sdk::account::Account;
 use solana_sdk::commitment_config::CommitmentConfig;
 use solana_sdk::pubkey::Pubkey;
+use solana_sdk::stake_history::StakeHistory;
 use std::time::Duration;
 use tokio::task::JoinHandle;
 /*
@@ -64,7 +64,7 @@ pub enum BootstrapEvent {
         Vec<(Pubkey, Account)>,
         Account,
     ),
-    AccountsMerged(StakeMap, VoteMap),
+    AccountsMerged(StakeMap, Option<StakeHistory>, VoteMap),
     Exit,
 }
 
@@ -76,8 +76,6 @@ enum BootsrapProcessResult {
 
 pub struct BootstrapData {
     pub done: bool,
-    pub current_epoch: u64,
-    pub next_epoch_start_slot: Slot,
     pub sleep_time: u64,
     pub rpc_url: String,
 }
@@ -116,7 +114,7 @@ fn process_bootstrap_event(
         BootstrapEvent::BootstrapAccountsFetched(stakes, votes, history) => {
             log::info!("BootstrapEvent::BootstrapAccountsFetched RECV");
             match (extract_stakestore(stakestore), extract_votestore(votestore)) {
-                (Ok(stake_map), Ok(vote_map)) => BootsrapProcessResult::Event(
+                (Ok((stake_map, _)), Ok(vote_map)) => BootsrapProcessResult::Event(
                     BootstrapEvent::StoreExtracted(stake_map, vote_map, stakes, votes, history),
                 ),
                 _ => {
@@ -131,27 +129,20 @@ fn process_bootstrap_event(
         BootstrapEvent::StoreExtracted(mut stake_map, mut vote_map, stakes, votes, history) => {
             log::info!("BootstrapEvent::StoreExtracted RECV");
 
-            match crate::stakestore::read_historystake_from_account(history) {
-                Some(stake_history) => {
-                    log::info!(
-                        "Read stake history done with history len:{}",
-                        stake_history.len()
-                    );
-                    stakestore.set_stake_history(stake_history);
-                }
-                None => log::error!("Bootstrap error, can't read stake history."),
+            let stake_history = crate::stakestore::read_historystake_from_account(history);
+            if stake_history.is_none() {
+                //TODO return error.
+                log::error!("Bootstrap error, can't read stake history.");
             }
 
             //merge new PA with stake map and vote map in a specific task
             let jh = tokio::task::spawn_blocking({
-                let current_epoch = data.current_epoch;
                 move || {
                     //update pa_list to set slot update to start epoq one.
                     crate::stakestore::merge_program_account_in_strake_map(
                         &mut stake_map,
                         stakes,
                         0, //with RPC no way to know the slot of the account update. Set to 0.
-                        current_epoch,
                     );
                     crate::votestore::merge_program_account_in_vote_map(
                         &mut vote_map,
@@ -159,15 +150,15 @@ fn process_bootstrap_event(
                         0, //with RPC no way to know the slot of the account update. Set to 0.
                     );
 
-                    BootstrapEvent::AccountsMerged(stake_map, vote_map)
+                    BootstrapEvent::AccountsMerged(stake_map, stake_history, vote_map)
                 }
             });
             BootsrapProcessResult::TaskHandle(jh)
         }
-        BootstrapEvent::AccountsMerged(stake_map, vote_map) => {
+        BootstrapEvent::AccountsMerged(stake_map, stake_history, vote_map) => {
             log::info!("BootstrapEvent::AccountsMerged RECV");
             match (
-                merge_stakestore(stakestore, stake_map, data.current_epoch),
+                merge_stakestore(stakestore, stake_map, stake_history),
                 merge_votestore(votestore, vote_map),
             ) {
                 (Ok(()), Ok(())) => BootsrapProcessResult::End,

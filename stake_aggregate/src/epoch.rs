@@ -1,132 +1,150 @@
 use crate::leader_schedule::LeaderScheduleEvent;
 use crate::Slot;
+use anyhow::bail;
+use serde::{Deserialize, Serialize};
 use solana_account_decoder::parse_sysvar::SysvarAccountType;
-use solana_client::client_error::ClientError;
 use solana_client::nonblocking::rpc_client::RpcClient;
 use solana_sdk::commitment_config::{CommitmentConfig, CommitmentLevel};
 use solana_sdk::epoch_info::EpochInfo;
+use solana_sdk::sysvar::epoch_schedule::EpochSchedule;
+use std::sync::Arc;
 use yellowstone_grpc_proto::geyser::CommitmentLevel as GeyserCommitmentLevel;
 use yellowstone_grpc_proto::prelude::SubscribeUpdateSlot;
 
+#[derive(Debug, Default, Copy, Clone, PartialOrd, PartialEq, Eq, Ord, Serialize, Deserialize)]
+pub struct Epoch {
+    pub epoch: u64,
+    pub slot_index: u64,
+    pub slots_in_epoch: u64,
+    pub absolute_slot: Slot,
+}
+
+impl Epoch {
+    pub fn get_next_epoch(&self, current_epoch: &CurrentEpochSlotState) -> Epoch {
+        let last_slot = current_epoch.epoch_cache.get_last_slot_in_epoch(self.epoch);
+        current_epoch.epoch_cache.get_epoch_at_slot(last_slot + 1)
+    }
+
+    pub fn into_epoch_info(&self, block_height: u64, transaction_count: Option<u64>) -> EpochInfo {
+        EpochInfo {
+            epoch: self.epoch,
+            slot_index: self.slot_index,
+            slots_in_epoch: self.slots_in_epoch,
+            absolute_slot: self.absolute_slot,
+            block_height,
+            transaction_count,
+        }
+    }
+}
+
 pub fn get_epoch_for_slot(slot: Slot, current_epoch: &CurrentEpochSlotState) -> u64 {
-    let slots_in_epoch = current_epoch.current_epoch.slots_in_epoch;
-    let epoch_start_slot = current_epoch.current_epoch_start_slot();
-    if slot >= epoch_start_slot {
-        let slot_distance = (slot - epoch_start_slot) / slots_in_epoch;
-        current_epoch.current_epoch.epoch + slot_distance
-    } else {
-        let slot_distance = (epoch_start_slot - slot) / slots_in_epoch;
-        current_epoch.current_epoch.epoch - slot_distance
+    current_epoch.epoch_cache.get_epoch_at_slot(slot).epoch
+}
+
+#[derive(Clone, Debug)]
+pub struct EpochCache {
+    epoch_schedule: Arc<EpochSchedule>,
+}
+
+impl EpochCache {
+    pub fn get_epoch_at_slot(&self, slot: Slot) -> Epoch {
+        let (epoch, slot_index) = self.epoch_schedule.get_epoch_and_slot_index(slot);
+        let slots_in_epoch = self.epoch_schedule.get_slots_in_epoch(epoch);
+        Epoch {
+            epoch,
+            slot_index,
+            slots_in_epoch,
+            absolute_slot: slot,
+        }
+    }
+
+    // pub fn get_epoch_shedule(&self) -> EpochSchedule {
+    //     self.epoch_schedule.as_ref().clone()
+    // }
+
+    pub fn get_slots_in_epoch(&self, epoch: u64) -> u64 {
+        self.epoch_schedule.get_slots_in_epoch(epoch)
+    }
+
+    // pub fn get_first_slot_in_epoch(&self, epoch: u64) -> u64 {
+    //     self.epoch_schedule.get_first_slot_in_epoch(epoch)
+    // }
+
+    pub fn get_last_slot_in_epoch(&self, epoch: u64) -> u64 {
+        self.epoch_schedule.get_last_slot_in_epoch(epoch)
+    }
+
+    pub async fn bootstrap_epoch(rpc_client: &RpcClient) -> anyhow::Result<EpochCache> {
+        let res_epoch = rpc_client
+            .get_account(&solana_sdk::sysvar::epoch_schedule::id())
+            .await?;
+        let Some(SysvarAccountType::EpochSchedule(epoch_schedule)) =
+            bincode::deserialize(&res_epoch.data[..])
+                .ok()
+                .map(SysvarAccountType::EpochSchedule)
+        else {
+            bail!("Error during bootstrap epoch. SysvarAccountType::EpochSchedule can't be deserilized. Epoch can't be calculated.");
+        };
+
+        Ok(EpochCache {
+            epoch_schedule: Arc::new(epoch_schedule),
+        })
     }
 }
 
 #[derive(Debug)]
 pub struct CurrentEpochSlotState {
     pub current_slot: CurrentSlot,
-    pub current_epoch: EpochInfo,
-    pub next_epoch_start_slot: Slot,
-    pub first_epoch_slot: bool,
+    epoch_cache: EpochCache,
+    current_epoch_value: Epoch,
 }
 
 impl CurrentEpochSlotState {
-    pub async fn bootstrap(rpc_url: String) -> Result<CurrentEpochSlotState, ClientError> {
+    // pub fn get_epoch_shedule(&self) -> EpochSchedule {
+    //     self.epoch_cache.get_epoch_shedule()
+    // }
+
+    pub fn get_current_epoch(&self) -> Epoch {
+        self.current_epoch_value
+    }
+
+    pub fn get_slots_in_epoch(&self, epoch: u64) -> u64 {
+        self.epoch_cache.get_slots_in_epoch(epoch)
+    }
+
+    pub async fn bootstrap(rpc_url: String) -> anyhow::Result<CurrentEpochSlotState> {
         let rpc_client = RpcClient::new_with_commitment(rpc_url, CommitmentConfig::finalized());
 
-        //get reduce_stake_warmup_cooldown feature info.
-        //NOT AND ACCOUNT. Get from config.
-        // let reduce_stake_warmup_cooldown_epoch = rpc_client
-        //     .get_account(&feature_set::reduce_stake_warmup_cooldown::id())
-        //     .await?;
+        let epoch_cache = EpochCache::bootstrap_epoch(&rpc_client).await?;
 
-        // let reduce_stake_warmup_cooldown_epoch = bincode::deserialize(&reduce_stake_warmup_cooldown_epoch.data[..])
-        //     .ok()
-        //     .map(SysvarAccountType::EpochSchedule);
-        // log::info!("reduce_stake_warmup_cooldown_epoch {reduce_stake_warmup_cooldown_epoch:?}");
-
-        //get epoch sysvar account to init epoch. More compatible with a snapshot  bootstrap.
-        //sysvar_epoch_schedule Some(EpochSchedule(EpochSchedule { slots_per_epoch: 100, leader_schedule_slot_offset: 100, warmup: false, first_normal_epoch: 0, first_normal_slot: 0 }))
-        let res_epoch = rpc_client
-            .get_account(&solana_sdk::sysvar::epoch_schedule::id())
-            .await?;
-        let sysvar_epoch_schedule = bincode::deserialize(&res_epoch.data[..])
-            .ok()
-            .map(SysvarAccountType::EpochSchedule);
-        log::info!("sysvar_epoch_schedule {sysvar_epoch_schedule:?}");
-
-        // Fetch current epoch
-        let current_epoch = rpc_client.get_epoch_info().await?;
-        let next_epoch_start_slot =
-            current_epoch.slots_in_epoch - current_epoch.slot_index + current_epoch.absolute_slot;
-        log::info!("Run_loop init {next_epoch_start_slot} current_epoch:{current_epoch:?}");
         Ok(CurrentEpochSlotState {
-            current_slot: Default::default(),
-            current_epoch,
-            next_epoch_start_slot,
-            first_epoch_slot: false,
+            current_slot: CurrentSlot::default(),
+            epoch_cache,
+            current_epoch_value: Epoch::default(),
         })
     }
 
-    pub fn current_epoch_start_slot(&self) -> Slot {
-        self.current_epoch.absolute_slot - self.current_epoch.slot_index
-    }
+    // pub fn current_epoch_start_slot(&self) -> Slot {
+    //     self.epoch_cache
+    //         .get_first_slot_in_epoch(self.current_slot.confirmed_slot)
+    // }
 
     pub fn current_epoch_end_slot(&self) -> Slot {
-        self.next_epoch_start_slot - 1
+        self.epoch_cache
+            .get_last_slot_in_epoch(self.current_epoch_value.epoch)
     }
 
     pub fn process_new_slot(
         &mut self,
         new_slot: &SubscribeUpdateSlot,
     ) -> Option<LeaderScheduleEvent> {
-        if let GeyserCommitmentLevel::Confirmed = new_slot.status() {
-            //for the first update of slot correct epoch info data.
-            if self.current_slot.confirmed_slot == 0 {
-                let diff = new_slot.slot - self.current_epoch.absolute_slot;
-                self.current_epoch.slot_index += diff;
-                self.current_epoch.absolute_slot = new_slot.slot;
-                log::trace!(
-                    "Set current epoch with diff:{diff} slot:{} current:{:?}",
-                    new_slot.slot,
-                    self.current_epoch,
-                );
-            //if new slot update slot related state data.
-            } else if new_slot.slot > self.current_slot.confirmed_slot {
-                //update epoch info
-                let mut diff = new_slot.slot - self.current_slot.confirmed_slot;
-                //First epoch slot, index is 0 so remove 1 from diff.
-                if self.first_epoch_slot {
-                    //calculate next epoch data
-                    self.current_epoch.epoch += 1;
-                    //slot can be non consecutif, use diff.
-                    self.current_epoch.slot_index = 0;
-                    self.current_epoch.absolute_slot = new_slot.slot;
-                    log::info!(
-                        "change_epoch calculated next epoch:{:?} at slot:{}",
-                        self.current_epoch,
-                        new_slot.slot,
-                    );
-
-                    self.first_epoch_slot = false;
-                    //slot_index start at 0.
-                    diff -= 1; //diff is always >= 1
-                    self.next_epoch_start_slot =
-                        self.next_epoch_start_slot + self.current_epoch.slots_in_epoch;
-                //set to next epochs.
-                } else {
-                    self.current_epoch.absolute_slot = new_slot.slot;
-                }
-                self.current_epoch.slot_index += diff;
-
-                log::trace!(
-                    "Slot epoch with slot:{} , diff:{diff} current epoch state:{self:?}",
-                    new_slot.slot
-                );
-            }
-        }
-        //update slot state for all commitment.
         self.current_slot.update_slot(&new_slot);
 
         if let GeyserCommitmentLevel::Confirmed = new_slot.status() {
+            if self.current_epoch_value.epoch == 0 {
+                //init first epoch
+                self.current_epoch_value = self.epoch_cache.get_epoch_at_slot(new_slot.slot);
+            }
             self.manage_change_epoch()
         } else {
             None
@@ -134,22 +152,17 @@ impl CurrentEpochSlotState {
     }
 
     fn manage_change_epoch(&mut self) -> Option<LeaderScheduleEvent> {
-        //we change the epoch at the last slot of the current epoch.
-        if self.current_slot.confirmed_slot >= self.current_epoch_end_slot() {
-            log::info!(
-                "End epoch slot detected:{}",
-                self.current_slot.confirmed_slot
-            );
+        if self.current_slot.confirmed_slot > self.current_epoch_end_slot() {
+            log::info!("Change epoch at slot:{}", self.current_slot.confirmed_slot);
 
-            //set epoch change effectif at next slot.
-            self.first_epoch_slot = true;
-
+            self.current_epoch_value = self.get_current_epoch().get_next_epoch(&self);
             //start leader schedule calculus
-            //switch to 2 next epoch to calculate schedule at next epoch.
             //at current epoch change the schedule is calculated for the next epoch.
-            let schedule_epoch = crate::leader_schedule::next_schedule_epoch(&self.current_epoch);
-            let schedule_epoch = crate::leader_schedule::next_schedule_epoch(&schedule_epoch);
-            Some(LeaderScheduleEvent::InitLeaderschedule(schedule_epoch))
+            Some(crate::leader_schedule::create_schedule_init_event(
+                self.current_epoch_value.epoch,
+                self.get_slots_in_epoch(self.current_epoch_value.epoch),
+                Arc::clone(&self.epoch_cache.epoch_schedule),
+            ))
         } else {
             None
         }

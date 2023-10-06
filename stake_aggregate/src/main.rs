@@ -48,7 +48,6 @@ use solana_sdk::stake::state::Delegation;
 use solana_sdk::vote::state::VoteState;
 use std::collections::HashMap;
 use std::env;
-use std::sync::Arc;
 use tokio::time::Duration;
 use yellowstone_grpc_client::GeyserGrpcClient;
 use yellowstone_grpc_proto::geyser::CommitmentLevel;
@@ -169,7 +168,7 @@ async fn run_loop<F: Interceptor>(mut client: GeyserGrpcClient<F>) -> anyhow::Re
     let mut leader_schedule_data = match crate::leader_schedule::bootstrap_leader_schedule(
         &schedule_current_file,
         &schedule_next_file,
-        current_epoch_state.current_epoch.slots_in_epoch,
+        &current_epoch_state,
     ) {
         Ok(data) => data,
         Err(err) => {
@@ -246,8 +245,6 @@ async fn run_loop<F: Interceptor>(mut client: GeyserGrpcClient<F>) -> anyhow::Re
     //Init bootstrap process
     let mut bootstrap_data = BootstrapData {
         done: false,
-        current_epoch: current_epoch_state.current_epoch.epoch,
-        next_epoch_start_slot: current_epoch_state.next_epoch_start_slot,
         sleep_time: 1,
         rpc_url: RPC_URL.to_string(),
     };
@@ -270,13 +267,13 @@ async fn run_loop<F: Interceptor>(mut client: GeyserGrpcClient<F>) -> anyhow::Re
                         tokio::task::spawn_blocking({
                             log::info!("RPC start save_stakes");
                             let current_stakes = stakestore.get_cloned_stake_map();
-                            let history = stakestore.get_cloned_stake_history();
-                            let move_epoch = current_epoch_state.current_epoch.clone();
+                            let move_epoch = current_epoch_state.get_current_epoch();
+                            let stake_history = stakestore.get_stake_history();
                             move || {
                                 let current_stake = crate::leader_schedule::build_current_stakes(
                                     &current_stakes,
-                                    history.as_ref(),
-                                    &move_epoch,
+                                    stake_history.as_ref(),
+                                    move_epoch.epoch,
                                     RPC_URL.to_string(),
                                     CommitmentConfig::confirmed(),
                                 );
@@ -332,45 +329,15 @@ async fn run_loop<F: Interceptor>(mut client: GeyserGrpcClient<F>) -> anyhow::Re
             }
             //Manage RPC call result execution
             Some(Ok(event)) = spawned_leader_schedule_task.next() =>  {
-                if let Some((new_schedule, epoch)) = crate::leader_schedule::run_leader_schedule_events(
+                let new_leader_schedule = crate::leader_schedule::run_leader_schedule_events(
                     RPC_URL.to_string(),
                     event,
                     &mut spawned_leader_schedule_task,
                     &mut stakestore,
                     &mut votestore,
-                ) {
-
-                    leader_schedule_data.current = leader_schedule_data.next.take();
-                    match new_schedule {
-                        Ok((new_schedule, new_stakes)) => {
-                            leader_schedule_data.next = Some(LeaderScheduleData {
-                                                schedule: Arc::new(new_schedule),
-                                                vote_stakes: new_stakes,
-                                                epoch: epoch.epoch,
-                                            });
-                                        },
-                        Err(err) => {
-                            log::error!("Error during new leader schedule generation:{err}");
-                            log::error!("No leader schedule available for next epoch.");
-                        }
-                    }
-
-                    //TODO remove verification when schedule ok.
-                    //verify calculated shedule with the one the RPC return.
-                    // if let Some(schedule) = new_schedule {
-                    //     tokio::task::spawn_blocking(|| {
-                    //         //10 second that the schedule has been calculated on the validator
-                    //         std::thread::sleep(std::time::Duration::from_secs(5));
-                    //         log::info!("Start Verify schedule");
-                    //         if let Err(err) = crate::leader_schedule::verify_schedule(schedule,RPC_URL.to_string()) {
-                    //             log::warn!("Error during schedule verification:{err}");
-                    //         }
-                    //         log::info!("End Verify schedule");
-                    //     });
-                    // }
-
-                }
-
+                );
+                leader_schedule_data.current = leader_schedule_data.next.take();
+                leader_schedule_data.next = new_leader_schedule;
             }
 
             //get confirmed slot or account
@@ -392,7 +359,6 @@ async fn run_loop<F: Interceptor>(mut client: GeyserGrpcClient<F>) -> anyhow::Re
                                                     if let Err(err) = stakestore.notify_stake_change(
                                                         account,
                                                         current_epoch_state.current_epoch_end_slot(),
-                                                        current_epoch_state.current_epoch.epoch,
                                                     ) {
                                                         log::warn!("Can't add new stake from account data err:{}", err);
                                                         continue;

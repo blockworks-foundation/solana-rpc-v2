@@ -88,7 +88,10 @@ pub struct RPCServer {
 
 #[jsonrpsee::core::async_trait]
 impl ConsensusRpcServer for RPCServer {
-    async fn get_latest_blockhash(&self, config: Option<RpcContextConfig>) -> Result<RpcBlockhash> {
+    async fn get_latest_blockhash(
+        &self,
+        _config: Option<RpcContextConfig>,
+    ) -> Result<RpcBlockhash> {
         todo!()
     }
 
@@ -137,7 +140,11 @@ pub fn server_rpc_request(
 ) {
     match request {
         crate::rpc::Requests::EpochInfo(tx) => {
-            if let Err(err) = tx.send(current_epoch_state.current_epoch.clone()) {
+            if let Err(err) = tx.send(
+                current_epoch_state
+                    .get_current_epoch()
+                    .into_epoch_info(0, None),
+            ) {
                 log::warn!("Channel error during sending back request status error:{err:?}");
             }
         }
@@ -158,11 +165,11 @@ pub fn server_rpc_request(
 
             log::info!(
                 "Requests::LeaderSchedule slot:{slot} epoch:{epoch} current epoch:{}",
-                current_epoch_state.current_epoch.epoch
+                current_epoch_state.get_current_epoch().epoch
             );
             //currently only return schedule for current of next epoch.
             let get_schedule_fn = |schedule: &LeaderScheduleData| {
-                (schedule.epoch == epoch).then(|| schedule.schedule.clone()) //Arc clone.
+                (schedule.epoch == epoch).then(|| schedule.schedule.clone()) //clone the schedule. TODO clone arc.
             };
             let schedule = leader_schedules
                 .current
@@ -285,7 +292,7 @@ pub(crate) async fn run_server(request_tx: Sender<Requests>) -> Result<ServerHan
                     Err("Error stake store extracted".to_string())
                 } else {
                     //replace pubkey with String. Json only allow distionary key with string.
-                    let ret: HashMap<String, StoredVote> = accounts
+                    let ret: HashMap<String, Arc<StoredVote>> = accounts
                         .into_iter()
                         .map(|(pk, acc)| (pk.to_string(), acc))
                         .collect();

@@ -1,15 +1,19 @@
+use crate::epoch::CurrentEpochSlotState;
+use crate::epoch::Epoch;
 use crate::stakestore::{extract_stakestore, merge_stakestore, StakeMap, StakeStore};
+use crate::votestore::StoredVote;
 use crate::votestore::{extract_votestore, merge_votestore, VoteMap, VoteStore};
-use anyhow::bail;
 use futures::stream::FuturesUnordered;
 use itertools::Itertools;
 use serde::{Deserialize, Serialize};
 use solana_client::rpc_client::RpcClient;
 use solana_ledger::leader_schedule::LeaderSchedule;
+use solana_program::sysvar::epoch_schedule::EpochSchedule;
 use solana_sdk::clock::NUM_CONSECUTIVE_LEADER_SLOTS;
 use solana_sdk::commitment_config::CommitmentConfig;
-use solana_sdk::epoch_info::EpochInfo;
+use solana_sdk::feature_set::FeatureSet;
 use solana_sdk::pubkey::Pubkey;
+use solana_sdk::stake::state::StakeActivationStatus;
 use solana_sdk::stake_history::StakeHistory;
 use std::collections::BTreeMap;
 use std::collections::HashMap;
@@ -34,73 +38,67 @@ pub struct CalculatedSchedule {
 #[derive(Debug)]
 pub struct LeaderScheduleData {
     pub schedule: Arc<HashMap<String, Vec<usize>>>,
-    pub vote_stakes: Vec<(Pubkey, u64)>,
+    pub vote_stakes: HashMap<Pubkey, (u64, Arc<StoredVote>)>,
     pub epoch: u64,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct EpochStake {
     epoch: u64,
-    stakes: Vec<(Pubkey, u64)>,
+    stake_vote_map: HashMap<Pubkey, (u64, Arc<StoredVote>)>,
 }
 
 impl From<SavedStake> for EpochStake {
     fn from(saved_stakes: SavedStake) -> Self {
         EpochStake {
             epoch: saved_stakes.epoch,
-            stakes: saved_stakes
-                .stakes
+            stake_vote_map: saved_stakes
+                .stake_vote_map
                 .into_iter()
-                .map(|(pk, st)| (Pubkey::from_str(&pk).unwrap(), st))
+                .map(|(pk, st)| (Pubkey::from_str(&pk).unwrap(), (st.0, st.1)))
                 .collect(),
         }
     }
 }
 
-pub fn next_schedule_epoch(current_epoch: &EpochInfo) -> EpochInfo {
-    let mut next_epoch_info = current_epoch.clone();
-    next_epoch_info.epoch += 1;
-    next_epoch_info.slot_index = 0;
-    next_epoch_info.absolute_slot =
-        current_epoch.absolute_slot + current_epoch.slots_in_epoch - current_epoch.slot_index;
-    next_epoch_info
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+struct SavedStake {
+    epoch: u64,
+    stake_vote_map: HashMap<String, (u64, Arc<StoredVote>)>,
 }
 
 pub fn bootstrap_leader_schedule(
     current_file_patch: &str,
     next_file_patch: &str,
-    slots_in_epoch: u64,
+    epoch_state: &CurrentEpochSlotState,
 ) -> anyhow::Result<CalculatedSchedule> {
-    let mut current_stakes = read_schedule_vote_stakes(current_file_patch)?;
-    let mut next_stakes = read_schedule_vote_stakes(next_file_patch)?;
+    let current_stakes = read_schedule_vote_stakes(current_file_patch)?;
+    let next_stakes = read_schedule_vote_stakes(next_file_patch)?;
 
     //calcualte leader schedule for all vote stakes.
     let current_schedule = calculate_leader_schedule(
-        &mut current_stakes.stakes,
+        &current_stakes.stake_vote_map,
         current_stakes.epoch,
-        slots_in_epoch,
-    )?;
-    let next_schedule =
-        calculate_leader_schedule(&mut next_stakes.stakes, next_stakes.epoch, slots_in_epoch)?;
+        epoch_state.get_slots_in_epoch(current_stakes.epoch),
+    );
+    let next_schedule = calculate_leader_schedule(
+        &next_stakes.stake_vote_map,
+        next_stakes.epoch,
+        epoch_state.get_slots_in_epoch(next_stakes.epoch),
+    );
 
     Ok(CalculatedSchedule {
         current: Some(LeaderScheduleData {
             schedule: Arc::new(current_schedule),
-            vote_stakes: current_stakes.stakes,
-            epoch: current_stakes.epoch,
+            vote_stakes: current_stakes.stake_vote_map,
+            epoch: epoch_state.get_slots_in_epoch(current_stakes.epoch),
         }),
         next: Some(LeaderScheduleData {
             schedule: Arc::new(next_schedule),
-            vote_stakes: next_stakes.stakes,
-            epoch: next_stakes.epoch,
+            vote_stakes: next_stakes.stake_vote_map,
+            epoch: epoch_state.get_slots_in_epoch(next_stakes.epoch),
         }),
     })
-}
-
-#[derive(Debug, Default, Clone, Serialize, Deserialize)]
-struct SavedStake {
-    epoch: u64,
-    stakes: Vec<(String, u64)>,
 }
 
 fn read_schedule_vote_stakes(file_path: &str) -> anyhow::Result<EpochStake> {
@@ -112,16 +110,16 @@ fn read_schedule_vote_stakes(file_path: &str) -> anyhow::Result<EpochStake> {
 
 fn save_schedule_vote_stakes(
     base_file_path: &str,
-    stakes: &Vec<(Pubkey, u64)>,
+    stake_vote_map: &HashMap<Pubkey, (u64, Arc<StoredVote>)>,
     epoch: u64,
 ) -> anyhow::Result<()> {
     //save new schedule for restart.
-    let filename = format!("{base_file_path}_{epoch}.json",);
+    let filename = format!("{base_file_path}_{}.json", epoch);
     let save_stakes = SavedStake {
         epoch,
-        stakes: stakes
+        stake_vote_map: stake_vote_map
             .iter()
-            .map(|(pk, st)| (pk.to_string(), *st))
+            .map(|(pk, st)| (pk.to_string(), (st.0, Arc::clone(&st.1))))
             .collect(),
     };
     let serialized_stakes = serde_json::to_string(&save_stakes).unwrap();
@@ -157,11 +155,8 @@ pub fn run_leader_schedule_events(
     bootstrap_tasks: &mut FuturesUnordered<JoinHandle<LeaderScheduleEvent>>,
     stakestore: &mut StakeStore,
     votestore: &mut VoteStore,
-) -> Option<(
-    anyhow::Result<(HashMap<String, Vec<usize>>, Vec<(Pubkey, u64)>)>,
-    EpochInfo,
-)> {
-    let result = process_leadershedule_event(rpc_url.clone(), event, stakestore, votestore);
+) -> Option<LeaderScheduleData> {
+    let result = process_leadershedule_event(event, stakestore, votestore);
     match result {
         LeaderScheduleResult::TaskHandle(jh) => {
             bootstrap_tasks.push(jh);
@@ -170,132 +165,155 @@ pub fn run_leader_schedule_events(
         LeaderScheduleResult::Event(event) => {
             run_leader_schedule_events(rpc_url, event, bootstrap_tasks, stakestore, votestore)
         }
-        LeaderScheduleResult::End(schedule, epoch) => Some((schedule, epoch)),
+        LeaderScheduleResult::End(schedule) => Some(schedule),
     }
 }
 
+// struct LeaderScheduleEpochData {
+//     current_epoch: u64,
+//     next_epoch: u64,
+//     slots_in_epoch: u64,
+//     epoch_schedule: Arc<EpochSchedule>,
+// }
+
 pub enum LeaderScheduleEvent {
-    InitLeaderschedule(EpochInfo),
-    CalculateScedule(StakeMap, VoteMap, EpochInfo, Option<StakeHistory>),
+    Init(u64, u64, Arc<EpochSchedule>),
     MergeStoreAndSaveSchedule(
         StakeMap,
         VoteMap,
-        anyhow::Result<(HashMap<String, Vec<usize>>, Vec<(Pubkey, u64)>)>,
-        EpochInfo,
+        LeaderScheduleData,
+        (u64, u64, Arc<EpochSchedule>),
+        Option<StakeHistory>,
     ),
 }
 
 enum LeaderScheduleResult {
     TaskHandle(JoinHandle<LeaderScheduleEvent>),
     Event(LeaderScheduleEvent),
-    End(
-        anyhow::Result<(HashMap<String, Vec<usize>>, Vec<(Pubkey, u64)>)>,
-        EpochInfo,
-    ),
+    End(LeaderScheduleData),
+}
+
+pub fn create_schedule_init_event(
+    current_epoch: u64,
+    slots_in_epoch: u64,
+    epoch_schedule: Arc<EpochSchedule>,
+) -> LeaderScheduleEvent {
+    log::info!("LeaderScheduleEvent::InitLeaderschedule START");
+    //TODO get a way to be updated of stake history.
+    //request the current state using RPC.
+    //TODO remove the await from the scheduler task.
+    // let before_stake_histo = stake_history.clone();
+    // let stake_history = crate::bootstrap::get_stakehistory_account(rpc_url)
+    //     .map(|account| crate::stakestore::read_historystake_from_account(account))
+    //     .unwrap_or_else(|_| {
+    //         log::error!("Error during stake history fetch. Use bootstrap one");
+    //         stake_history.map(|st| st.as_ref().clone())
+    //     });
+    // log::info!(
+    //     "stake_hsitorique epoch{} before:{before_stake_histo:?} after:{stake_history:?}",
+    //     epoch_data.current_epoch
+    // );
+    LeaderScheduleEvent::Init(current_epoch, slots_in_epoch, epoch_schedule)
 }
 
 //TODO remove desactivated account after leader schedule calculus.
 fn process_leadershedule_event(
-    rpc_url: String,
+    //    rpc_url: String,
     event: LeaderScheduleEvent,
     stakestore: &mut StakeStore,
     votestore: &mut VoteStore,
 ) -> LeaderScheduleResult {
     match event {
-        LeaderScheduleEvent::InitLeaderschedule(schedule_epoch) => {
-            log::info!("LeaderScheduleEvent::InitLeaderschedule RECV");
-            //For test TODO put in extract and restore process to avoid to clone.
-            let stake_history = stakestore.get_cloned_stake_history();
-            //TODO get a way to be updated of stake history.
-            //request the current state using RPC.
-            //TODO remove the await from the scheduler task.
-            let before_stake_histo = stake_history.clone();
-            let stake_history = crate::bootstrap::get_stakehistory_account(rpc_url)
-                .map(|account| crate::stakestore::read_historystake_from_account(account))
-                .unwrap_or_else(|_| {
-                    log::error!("Error during stake history fetch. Use bootstrap one");
-                    stake_history
-                });
-            log::info!(
-                "stake_hsitorique epoch{} before:{before_stake_histo:?} after:{stake_history:?}",
-                schedule_epoch.epoch
-            );
+        LeaderScheduleEvent::Init(current_epoch, slots_in_epoch, epoch_schedule) => {
             match (extract_stakestore(stakestore), extract_votestore(votestore)) {
-                (Ok(stake_map), Ok(vote_map)) => {
-                    LeaderScheduleResult::Event(LeaderScheduleEvent::CalculateScedule(
-                        stake_map,
-                        vote_map,
-                        schedule_epoch,
-                        stake_history,
-                    ))
-                }
-                _ => {
-                    log::warn!("process_leadershedule_event error during extract store");
-                    let jh = tokio::spawn(async move {
-                        tokio::time::sleep(Duration::from_secs(1)).await;
-                        LeaderScheduleEvent::InitLeaderschedule(schedule_epoch)
+                (Ok((stake_map, mut stake_history)), Ok(vote_map)) => {
+                    //For test TODO put in extract and restore process to avoid to clone.
+                    log::info!("LeaderScheduleEvent::CalculateScedule");
+                    let epoch_schedule = Arc::clone(&epoch_schedule);
+                    let jh = tokio::task::spawn_blocking({
+                        move || {
+                            let next_epoch = current_epoch + 1;
+                            let epoch_vote_stakes = calculate_epoch_stakes(
+                                &stake_map,
+                                &vote_map,
+                                current_epoch,
+                                next_epoch,
+                                stake_history.as_mut(),
+                                &epoch_schedule,
+                            );
+
+                            let leader_schedule = calculate_leader_schedule(
+                                &epoch_vote_stakes,
+                                next_epoch,
+                                slots_in_epoch,
+                            );
+
+                            // let epoch_vote_stakes_old = calculate_epoch_stakes_old_algo(
+                            //     &stake_map,
+                            //     &vote_map,
+                            //     &epoch_state.next_epoch,
+                            //     stake_history.as_ref(),
+                            // );
+
+                            // let leader_schedule_old =
+                            //     calculate_leader_schedule(&epoch_vote_stakes_old, &next_epoch);
+                            if let Err(err) = save_schedule_vote_stakes(
+                                SCHEDULE_STAKE_BASE_FILE_NAME,
+                                &epoch_vote_stakes,
+                                next_epoch,
+                            ) {
+                                log::error!(
+                                "Error during saving in file of the new schedule of epoch:{} error:{err}",
+                                next_epoch
+                            );
+                            }
+                            log::info!("End calculate leader schedule");
+                            LeaderScheduleEvent::MergeStoreAndSaveSchedule(
+                                stake_map,
+                                vote_map,
+                                LeaderScheduleData {
+                                    schedule: Arc::new(leader_schedule),
+                                    vote_stakes: epoch_vote_stakes,
+                                    epoch: next_epoch,
+                                },
+                                (current_epoch, slots_in_epoch, epoch_schedule),
+                                stake_history,
+                            )
+                        }
                     });
                     LeaderScheduleResult::TaskHandle(jh)
                 }
-            }
-        }
-        LeaderScheduleEvent::CalculateScedule(
-            stake_map,
-            vote_map,
-            schedule_epoch,
-            stake_history,
-        ) => {
-            log::info!("LeaderScheduleEvent::CalculateScedule RECV");
-            let jh = tokio::task::spawn_blocking({
-                move || {
-                    let schedule_and_stakes =
-                        crate::leader_schedule::calculate_leader_schedule_from_stake_map(
-                            &stake_map,
-                            &vote_map,
-                            &schedule_epoch,
-                            stake_history.as_ref(),
-                        );
-                    if let Ok((_, vote_stakes)) = &schedule_and_stakes {
-                        if let Err(err) = save_schedule_vote_stakes(
-                            SCHEDULE_STAKE_BASE_FILE_NAME,
-                            vote_stakes,
-                            schedule_epoch.epoch,
-                        ) {
-                            log::error!(
-                                "Error during saving in file of the new schedule of epoch:{} error:{err}",
-                                schedule_epoch.epoch
-                            );
-                        }
-                    }
-                    log::info!("End calculate leader schedule");
-                    LeaderScheduleEvent::MergeStoreAndSaveSchedule(
-                        stake_map,
-                        vote_map,
-                        schedule_and_stakes,
-                        schedule_epoch,
-                    )
+                _ => {
+                    log::error!("Create leadershedule init event error during extract store");
+                    LeaderScheduleResult::Event(LeaderScheduleEvent::Init(
+                        current_epoch,
+                        slots_in_epoch,
+                        epoch_schedule,
+                    ))
                 }
-            });
-            LeaderScheduleResult::TaskHandle(jh)
+            }
         }
         LeaderScheduleEvent::MergeStoreAndSaveSchedule(
             stake_map,
             vote_map,
-            schedule,
-            schedule_epoch,
+            schedule_data,
+            (current_epoch, slots_in_epoch, epoch_schedule),
+            stake_history,
         ) => {
             log::info!("LeaderScheduleEvent::MergeStoreAndSaveSchedule RECV");
             match (
-                merge_stakestore(stakestore, stake_map, schedule_epoch.epoch),
+                merge_stakestore(stakestore, stake_map, stake_history),
                 merge_votestore(votestore, vote_map),
             ) {
-                (Ok(()), Ok(())) => LeaderScheduleResult::End(schedule, schedule_epoch),
+                (Ok(()), Ok(())) => LeaderScheduleResult::End(schedule_data),
                 _ => {
                     //this shoud never arrive because the store has been extracted before.
                     //TODO remove this error using type state
                     log::warn!("LeaderScheduleEvent::MergeStoreAndSaveSchedule merge stake or vote fail, -restart Schedule");
-                    LeaderScheduleResult::Event(LeaderScheduleEvent::InitLeaderschedule(
-                        schedule_epoch,
+                    LeaderScheduleResult::Event(LeaderScheduleEvent::Init(
+                        current_epoch,
+                        slots_in_epoch,
+                        epoch_schedule,
                     ))
                 }
             }
@@ -303,65 +321,68 @@ fn process_leadershedule_event(
     }
 }
 
-// fn calculate_epoch_stakes(stake_map: &StakeMap) {
-//         let stake_history_entry =
+fn calculate_epoch_stakes(
+    stake_map: &StakeMap,
+    vote_map: &VoteMap,
+    current_epoch: u64,
+    next_epoch: u64,
+    mut stake_history: Option<&mut StakeHistory>,
+    epoch_schedule: &EpochSchedule,
+) -> HashMap<Pubkey, (u64, Arc<StoredVote>)> {
+    //update stake history with current end epoch stake values.
+    let new_rate_activation_epoch =
+        FeatureSet::default().new_warmup_cooldown_rate_epoch(epoch_schedule);
+    let stake_history_entry =
+        stake_map
+            .values()
+            .fold(StakeActivationStatus::default(), |acc, stake_account| {
+                let delegation = stake_account.stake;
+                acc + delegation.stake_activating_and_deactivating(
+                    current_epoch,
+                    stake_history.as_deref(),
+                    new_rate_activation_epoch,
+                )
+            });
+    match stake_history {
+        Some(ref mut stake_history) => stake_history.add(current_epoch, stake_history_entry),
+        None => log::warn!("Vote stake calculus without Stake History"),
+    };
 
-//             let stake_delegations: Vec<_> = self.stake_delegations.values().collect();
-//         // Wrap up the prev epoch by adding new stake history entry for the
-//         // prev epoch.
-//         let stake_history_entry = thread_pool.install(|| {
-//             stake_delegations
-//                 .par_iter()
-//                 .fold(StakeActivationStatus::default, |acc, stake_account| {
-//                     let delegation = stake_account.delegation();
-//                     acc + delegation.stake_activating_and_deactivating(
-//                         self.epoch,
-//                         Some(&self.stake_history),
-//                         new_rate_activation_epoch,
-//                     )
-//                 })
-//                 .reduce(StakeActivationStatus::default, Add::add)
-//         });
-//         self.stake_history.add(self.epoch, stake_history_entry);
-//         self.epoch = next_epoch;
-//         // Refresh the stake distribution of vote accounts for the next epoch,
-//         // using new stake history.
-//         let delegated_stakes = thread_pool.install(|| {
-//             stake_delegations
-//                 .par_iter()
-//                 .fold(HashMap::default, |mut delegated_stakes, stake_account| {
-//                     let delegation = stake_account.delegation();
-//                     let entry = delegated_stakes.entry(delegation.voter_pubkey).or_default();
-//                     *entry += delegation.stake(
-//                         self.epoch,
-//                         Some(&self.stake_history),
-//                         new_rate_activation_epoch,
-//                     );
-//                     delegated_stakes
-//                 })
-//                 .reduce(HashMap::default, merge)
-//         });
-//         self.vote_accounts = self
-//             .vote_accounts
-//             .iter()
-//             .map(|(&vote_pubkey, vote_account)| {
-//                 let delegated_stake = delegated_stakes
-//                     .get(&vote_pubkey)
-//                     .copied()
-//                     .unwrap_or_default();
-//                 (vote_pubkey, (delegated_stake, vote_account.clone()))
-//             })
-//             .collect();
+    //calculate schedule stakes.
+    let delegated_stakes: HashMap<Pubkey, u64> =
+        stake_map
+            .values()
+            .fold(HashMap::default(), |mut delegated_stakes, stake_account| {
+                let delegation = stake_account.stake;
+                let entry = delegated_stakes.entry(delegation.voter_pubkey).or_default();
+                *entry += delegation.stake(
+                    next_epoch,
+                    stake_history.as_deref(),
+                    new_rate_activation_epoch,
+                );
+                delegated_stakes
+            });
 
-// }
+    let staked_vote_map: HashMap<Pubkey, (u64, Arc<StoredVote>)> = vote_map
+        .values()
+        .map(|vote_account| {
+            let delegated_stake = delegated_stakes
+                .get(&vote_account.pubkey)
+                .copied()
+                .unwrap_or_default();
+            (vote_account.pubkey, (delegated_stake, vote_account.clone()))
+        })
+        .collect();
+    staked_vote_map
+}
 
-fn calculate_leader_schedule_from_stake_map(
-    stake_map: &crate::stakestore::StakeMap,
-    vote_map: &crate::votestore::VoteMap,
-    current_epoch_info: &EpochInfo,
+fn calculate_epoch_stakes_old_algo(
+    stake_map: &StakeMap,
+    vote_map: &VoteMap,
+    next_epoch: &Epoch,
     stake_history: Option<&StakeHistory>,
-) -> anyhow::Result<(HashMap<String, Vec<usize>>, Vec<(Pubkey, u64)>)> {
-    let mut stakes = HashMap::<Pubkey, u64>::new();
+) -> HashMap<Pubkey, (u64, Arc<StoredVote>)> {
+    let mut stakes = HashMap::<Pubkey, (u64, Arc<StoredVote>)>::new();
     log::info!(
         "calculate_leader_schedule_from_stake_map vote map len:{} stake map len:{} history len:{:?}",
         vote_map.len(),
@@ -369,7 +390,7 @@ fn calculate_leader_schedule_from_stake_map(
         stake_history.as_ref().map(|h| h.len())
     );
 
-    let ten_epoch_slot_long = 10 * current_epoch_info.slots_in_epoch;
+    let ten_epoch_slot_long = 10 * next_epoch.slots_in_epoch;
 
     //log::trace!("calculate_leader_schedule_from_stake_map stake_map:{stake_map:?} current_epoch_info:{current_epoch_info:?}");
     for storestake in stake_map.values() {
@@ -392,46 +413,148 @@ fn calculate_leader_schedule_from_stake_map(
                 "leader schedule vote:{} with None root_slot, add it",
                 vote_account.pubkey
             );
-            current_epoch_info.absolute_slot
-        }) < current_epoch_info
-            .absolute_slot
-            .saturating_sub(ten_epoch_slot_long)
+            next_epoch.absolute_slot
+        }) < next_epoch.absolute_slot.saturating_sub(ten_epoch_slot_long)
         {
             log::info!("Vote account:{} nodeid:{} that hasn't vote since 10 epochs. Stake for account:{:?}. Remove leader_schedule."
                     , storestake.stake.voter_pubkey
                     ,vote_account.vote_data.node_pubkey
                     //TODO us the right reduce_stake_warmup_cooldown_epoch value from validator feature.
-                    , storestake.stake.stake(current_epoch_info.epoch, stake_history, Some(0)),
+                    , storestake.stake.stake(next_epoch.epoch, stake_history, Some(0)),
                 );
         } else {
             let effective_stake = storestake
                 .stake
                 //TODO us the right reduce_stake_warmup_cooldown_epoch value from validator feature.
-                .stake(current_epoch_info.epoch, stake_history, Some(0));
-            //only vote account with positive stake are use for the schedule.
-            if effective_stake > 0 {
-                *(stakes
-                    .entry(vote_account.vote_data.node_pubkey)
-                    .or_insert(0)) += effective_stake;
-            } else {
-                log::info!(
-                    "leader schedule vote:{} with 0 effective vote",
-                    storestake.stake.voter_pubkey
-                );
-            }
+                .stake(next_epoch.epoch, stake_history, Some(0));
+
+            stakes
+                .entry(vote_account.pubkey)
+                .or_insert((0, vote_account.clone()))
+                .0 += effective_stake;
+
+            // //only vote account with positive stake are use for the schedule.
+            // if effective_stake > 0 {
+            //     *(stakes
+            //         .entry(vote_account.vote_data.node_pubkey)
+            //         .or_insert(0)) += effective_stake;
+            // } else {
+            //     log::info!(
+            //         "leader schedule vote:{} with 0 effective vote",
+            //         storestake.stake.voter_pubkey
+            //     );
+            // }
         }
     }
-
-    let mut schedule_stakes: Vec<(Pubkey, u64)> = vec![];
-    schedule_stakes.extend(stakes.drain());
-
-    let leader_schedule = calculate_leader_schedule(
-        &mut schedule_stakes,
-        current_epoch_info.epoch,
-        current_epoch_info.slots_in_epoch,
-    )?;
-    Ok((leader_schedule, schedule_stakes))
+    stakes
 }
+
+//Copied from leader_schedule_utils.rs
+// Mostly cribbed from leader_schedule_utils
+fn calculate_leader_schedule(
+    stake_vote_map: &HashMap<Pubkey, (u64, Arc<StoredVote>)>,
+    epoch: u64,
+    slots_in_epoch: u64,
+) -> HashMap<String, Vec<usize>> {
+    let mut stakes: Vec<(Pubkey, u64)> = stake_vote_map
+        .iter()
+        .filter_map(|(pk, (stake, _))| (*stake > 0).then_some((*pk, *stake)))
+        .collect();
+
+    let mut seed = [0u8; 32];
+    seed[0..8].copy_from_slice(&epoch.to_le_bytes());
+    sort_stakes(&mut stakes);
+    log::info!("calculate_leader_schedule stakes:{stakes:?} epoch:{epoch}");
+    let schedule = LeaderSchedule::new(&stakes, seed, slots_in_epoch, NUM_CONSECUTIVE_LEADER_SLOTS);
+
+    let slot_schedule = schedule
+        .get_slot_leaders()
+        .iter()
+        .enumerate()
+        .map(|(i, pk)| (pk.to_string(), i))
+        .into_group_map()
+        .into_iter()
+        .collect();
+    slot_schedule
+}
+
+// fn calculate_leader_schedule_from_stake_map(
+//     stake_map: &crate::stakestore::StakeMap,
+//     vote_map: &crate::votestore::VoteMap,
+//     current_epoch_info: &EpochInfo,
+//     stake_history: Option<&StakeHistory>,
+// ) -> anyhow::Result<(HashMap<String, Vec<usize>>, Vec<(Pubkey, u64)>)> {
+//     let mut stakes = HashMap::<Pubkey, u64>::new();
+//     log::info!(
+//         "calculate_leader_schedule_from_stake_map vote map len:{} stake map len:{} history len:{:?}",
+//         vote_map.len(),
+//         stake_map.len(),
+//         stake_history.as_ref().map(|h| h.len())
+//     );
+
+//     let ten_epoch_slot_long = 10 * current_epoch_info.slots_in_epoch;
+
+//     //log::trace!("calculate_leader_schedule_from_stake_map stake_map:{stake_map:?} current_epoch_info:{current_epoch_info:?}");
+//     for storestake in stake_map.values() {
+//         //get nodeid for vote account
+//         let Some(vote_account) = vote_map.get(&storestake.stake.voter_pubkey) else {
+//             log::info!(
+//                 "Vote account not found in vote map for stake vote account:{}",
+//                 &storestake.stake.voter_pubkey
+//             );
+//             continue;
+//         };
+//         //TODO validate the number of epoch.
+//         //remove vote account that hasn't vote since 10 epoch.
+//         //on testnet the vote account CY7gjryUPV6Pwbsn4aArkMBL7HSaRHB8sPZUvhw558Tm node_id:6YpwLjgXcMWAj29govWQr87kaAGKS7CnoqWsEDJE4h8P
+//         //hasn't vote since a long time but still return on RPC call get_voteaccounts.
+//         //the validator don't use it for leader schedule.
+//         if vote_account.vote_data.root_slot.unwrap_or_else(|| {
+//             //vote with no root_slot are added. They have just been activated and can have active stake- TODO TO TEST.
+//             log::info!(
+//                 "leader schedule vote:{} with None root_slot, add it",
+//                 vote_account.pubkey
+//             );
+//             current_epoch_info.absolute_slot
+//         }) < current_epoch_info
+//             .absolute_slot
+//             .saturating_sub(ten_epoch_slot_long)
+//         {
+//             log::info!("Vote account:{} nodeid:{} that hasn't vote since 10 epochs. Stake for account:{:?}. Remove leader_schedule."
+//                     , storestake.stake.voter_pubkey
+//                     ,vote_account.vote_data.node_pubkey
+//                     //TODO us the right reduce_stake_warmup_cooldown_epoch value from validator feature.
+//                     , storestake.stake.stake(current_epoch_info.epoch, stake_history, Some(0)),
+//                 );
+//         } else {
+//             let effective_stake = storestake
+//                 .stake
+//                 //TODO us the right reduce_stake_warmup_cooldown_epoch value from validator feature.
+//                 .stake(current_epoch_info.epoch, stake_history, Some(0));
+//             //only vote account with positive stake are use for the schedule.
+//             if effective_stake > 0 {
+//                 *(stakes
+//                     .entry(vote_account.vote_data.node_pubkey)
+//                     .or_insert(0)) += effective_stake;
+//             } else {
+//                 log::info!(
+//                     "leader schedule vote:{} with 0 effective vote",
+//                     storestake.stake.voter_pubkey
+//                 );
+//             }
+//         }
+//     }
+
+//     let mut schedule_stakes: Vec<(Pubkey, u64)> = vec![];
+//     schedule_stakes.extend(stakes.drain());
+
+//     let leader_schedule = calculate_leader_schedule_old(
+//         &mut schedule_stakes,
+//         current_epoch_info.epoch,
+//         current_epoch_info.slots_in_epoch,
+//     )?;
+//     Ok((leader_schedule, schedule_stakes))
+// }
 
 // fn is_stake_to_add(
 //     stake_pubkey: Pubkey,
@@ -461,30 +584,30 @@ fn calculate_leader_schedule_from_stake_map(
 
 //Copied from leader_schedule_utils.rs
 // Mostly cribbed from leader_schedule_utils
-fn calculate_leader_schedule(
-    stakes: &mut Vec<(Pubkey, u64)>,
-    epoch: u64,
-    slots_in_epoch: u64,
-) -> anyhow::Result<HashMap<String, Vec<usize>>> {
-    if stakes.is_empty() {
-        bail!("calculate_leader_schedule stakes list is empty. no schedule can be calculated.");
-    }
-    let mut seed = [0u8; 32];
-    seed[0..8].copy_from_slice(&epoch.to_le_bytes());
-    sort_stakes(stakes);
-    log::info!("calculate_leader_schedule stakes:{stakes:?} epoch:{epoch:?}");
-    let schedule = LeaderSchedule::new(&stakes, seed, slots_in_epoch, NUM_CONSECUTIVE_LEADER_SLOTS);
+// fn calculate_leader_schedule_old(
+//     stakes: &mut Vec<(Pubkey, u64)>,
+//     epoch: u64,
+//     slots_in_epoch: u64,
+// ) -> anyhow::Result<HashMap<String, Vec<usize>>> {
+//     if stakes.is_empty() {
+//         bail!("calculate_leader_schedule stakes list is empty. no schedule can be calculated.");
+//     }
+//     let mut seed = [0u8; 32];
+//     seed[0..8].copy_from_slice(&epoch.to_le_bytes());
+//     sort_stakes(stakes);
+//     log::info!("calculate_leader_schedule stakes:{stakes:?} epoch:{epoch:?}");
+//     let schedule = LeaderSchedule::new(&stakes, seed, slots_in_epoch, NUM_CONSECUTIVE_LEADER_SLOTS);
 
-    let slot_schedule = schedule
-        .get_slot_leaders()
-        .iter()
-        .enumerate()
-        .map(|(i, pk)| (pk.to_string(), i))
-        .into_group_map()
-        .into_iter()
-        .collect();
-    Ok(slot_schedule)
-}
+//     let slot_schedule = schedule
+//         .get_slot_leaders()
+//         .iter()
+//         .enumerate()
+//         .map(|(i, pk)| (pk.to_string(), i))
+//         .into_group_map()
+//         .into_iter()
+//         .collect();
+//     Ok(slot_schedule)
+// }
 
 // Cribbed from leader_schedule_utils
 fn sort_stakes(stakes: &mut Vec<(Pubkey, u64)>) {
@@ -603,7 +726,7 @@ use solana_sdk::stake::state::StakeState;
 pub fn build_current_stakes(
     stake_map: &crate::stakestore::StakeMap,
     stake_history: Option<&StakeHistory>,
-    current_epoch_info: &EpochInfo,
+    current_epoch: u64,
     rpc_url: String,
     commitment: CommitmentConfig,
 ) -> BTreeMap<String, (u64, u64)> {
@@ -628,10 +751,9 @@ pub fn build_current_stakes(
         match BorshDeserialize::deserialize(&mut account.data.as_slice()).unwrap() {
             StakeState::Stake(_, stake) => {
                 //vote account version
-                let effective_stake =
-                    stake
-                        .delegation
-                        .stake(current_epoch_info.epoch, stake_history, Some(0));
+                let effective_stake = stake
+                    .delegation
+                    .stake(current_epoch, stake_history, Some(0));
                 if effective_stake > 0 {
                     // Add the stake in this stake account to the total for the delegated-to vote account
                     log::trace!("RPC Stake {pubkey} account:{account:?} stake:{stake:?}");
@@ -657,10 +779,7 @@ pub fn build_current_stakes(
     stake_map
         .iter()
         .filter_map(|(pubkey, stake)| {
-            let effective_stake =
-                stake
-                    .stake
-                    .stake(current_epoch_info.epoch, stake_history, Some(0));
+            let effective_stake = stake.stake.stake(current_epoch, stake_history, Some(0));
             (effective_stake > 0).then(|| (pubkey, stake, effective_stake))
         })
         .for_each(|(pubkey, stake, effective_stake)| {
