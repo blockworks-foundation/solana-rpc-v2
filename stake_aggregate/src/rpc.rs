@@ -22,7 +22,7 @@ use thiserror::Error;
 use tokio::sync::mpsc::Sender;
 use tokio::sync::oneshot;
 
-const PRIVATE_RPC_ADDRESS: &str = "0.0.0.0:3000";
+const PRIVATE_RPC_ADDRESS: &str = "0.0.0.0:3001";
 const SERVER_ERROR_MSG: &str = "Internal server error";
 
 //internal RPC access
