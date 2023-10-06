@@ -135,7 +135,12 @@ impl StakeStore {
         account: AccountPretty,
         current_end_epoch_slot: Slot,
     ) -> anyhow::Result<()> {
+        //if lamport == 0 the account has been removed.
         if account.lamports == 0 {
+            self.notify_stake_action(
+                ExtractedAction::Remove(account.pubkey, account.slot),
+                current_end_epoch_slot,
+            );
         } else {
             let Ok(delegated_stake_opt) = account.read_stake() else {
                 bail!("Can't read stake from account data");
@@ -224,21 +229,6 @@ impl StakeStore {
         for action in self.updates {
             stakestore.process_stake_action(action);
         }
-
-        //verify one stake account to test. TODO remove
-        // let stake_account = stakestore
-        //     .stakes
-        //     .get(&Pubkey::from_str("2wAVZS68P6frWqpwMu7q67A3j54RFmBjq4oH94sYi7ce").unwrap());
-        // let stake = stake_account.map(|stake| {
-        //     stake
-        //         .stake
-        //         .stake(current_epoch, stakestore.stake_history.as_ref(), Some(0))
-        // });
-        // log::info!(
-        //     "merge_stakes 2wAVZS68P6frWqpwMu7q67A3j54RFmBjq4oH94sYi7ce:{:?}",
-        //     stake
-        // );
-
         Ok(stakestore)
     }
 
@@ -249,7 +239,7 @@ impl StakeStore {
             .map(|stake| stake.last_update_slot <= update_slot)
             .unwrap_or(true)
         {
-            log::info!("remove_from_store for {}", account_pk.to_string());
+            log::info!("Stake remove_from_store for {}", account_pk.to_string());
             self.stakes.remove(account_pk);
         }
     }
@@ -726,21 +716,21 @@ pub async fn process_stake_tx_message(
                 current_end_epoch_slot,
             );
 
-            send_verification(
-                stake_sender,
-                stakestore,
-                "Merge Destination",
-                account_keys[instruction.accounts[0] as usize],
-            )
-            .await;
+            // send_verification(
+            //     stake_sender,
+            //     stakestore,
+            //     "Merge Destination",
+            //     account_keys[instruction.accounts[0] as usize],
+            // )
+            // .await;
 
-            send_verification(
-                stake_sender,
-                stakestore,
-                "Merge Source",
-                account_keys[instruction.accounts[1] as usize],
-            )
-            .await;
+            // send_verification(
+            //     stake_sender,
+            //     stakestore,
+            //     "Merge Source",
+            //     account_keys[instruction.accounts[1] as usize],
+            // )
+            // .await;
         }
     }
 }

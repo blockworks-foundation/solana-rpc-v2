@@ -258,7 +258,6 @@ async fn run_loop<F: Interceptor>(mut client: GeyserGrpcClient<F>) -> anyhow::Re
 
     //TODO remove. Store parent hash to see if we don't miss a block.
     let mut parent_block_slot = None;
-
     loop {
         tokio::select! {
             Some(req) = request_rx.recv() => {
