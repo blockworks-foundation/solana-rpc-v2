@@ -50,6 +50,9 @@ yellowstone-grpc-proto = { path = "../../yellowstone-grpc/yellowstone-grpc-proto
 #yellowstone-grpc-client = "1.8.0+solana.1.16.1"
 #yellowstone-grpc-proto = "1.8.0+solana.1.16.1"
 
+#yellowstone-grpc-client = "1.11.0+solana.1.16.14"
+#yellowstone-grpc-proto = "1.10.0+solana.1.16.14"
+
 solana-sdk = "1.16.14"
 solana-client = "1.16.14"
 solana-ledger = "1.16.14"

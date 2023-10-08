@@ -152,7 +152,11 @@ impl CurrentEpochSlotState {
     }
 
     fn manage_change_epoch(&mut self) -> Option<LeaderScheduleEvent> {
-        if self.current_slot.confirmed_slot > self.current_epoch_end_slot() {
+        //execute leaderschedule calculus at the last slot of the current epoch.
+        //account change of the slot has been send.
+        //first epoch slot send all stake change and during this send no slot is send.
+        //to avoid to delay too much the schdule, start the calculus at the end of the epoch.
+        if self.current_slot.confirmed_slot >= self.current_epoch_end_slot() {
             log::info!("Change epoch at slot:{}", self.current_slot.confirmed_slot);
 
             self.current_epoch_value = self.get_current_epoch().get_next_epoch(&self);
