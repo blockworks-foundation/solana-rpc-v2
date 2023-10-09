@@ -2,7 +2,7 @@
 //RUST_BACKTRACE=1 RUST_LOG=stake_aggregate=info cargo run --release --bin stake_aggregate &> stake_logs.txt &
 /*
  RPC calls;
- curl http://localhost:3000 -X POST -H "Content-Type: application/json" -d '
+ curl http://localhost:3001 -X POST -H "Content-Type: application/json" -d '
   {
     "jsonrpc": "2.0",
     "id" : 1,
@@ -11,7 +11,7 @@
   }
 '
 
-curl http://localhost:3000 -X POST -H "Content-Type: application/json" -d '
+curl http://localhost:3001 -X POST -H "Content-Type: application/json" -d '
   {
     "jsonrpc": "2.0",
     "id" : 1,
@@ -21,7 +21,7 @@ curl http://localhost:3000 -X POST -H "Content-Type: application/json" -d '
 ' -o extract_stake_533_3.json
 
 
-curl http://localhost:3000 -X POST -H "Content-Type: application/json" -d '
+curl http://localhost:3001 -X POST -H "Content-Type: application/json" -d '
   {
     "jsonrpc": "2.0",
     "id" : 1,

@@ -369,7 +369,13 @@ fn calculate_epoch_stakes(
             let delegated_stake = delegated_stakes
                 .get(&vote_account.pubkey)
                 .copied()
-                .unwrap_or_default();
+                .unwrap_or_else(|| {
+                    log::info!(
+                        "calculate_epoch_stakes stake with no vote account:{}",
+                        vote_account.pubkey
+                    );
+                    Default::default()
+                });
             (vote_account.pubkey, (delegated_stake, vote_account.clone()))
         })
         .collect();
@@ -458,7 +464,9 @@ fn calculate_leader_schedule(
 ) -> HashMap<String, Vec<usize>> {
     let mut stakes: Vec<(Pubkey, u64)> = stake_vote_map
         .iter()
-        .filter_map(|(pk, (stake, _))| (*stake > 0).then_some((*pk, *stake)))
+        .filter_map(|(_, (stake, vote_account))| {
+            (*stake > 0).then_some((vote_account.vote_data.node_pubkey, *stake))
+        })
         .collect();
 
     let mut seed = [0u8; 32];
