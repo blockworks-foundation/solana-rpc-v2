@@ -195,7 +195,7 @@ async fn run_loop<F: Interceptor>(mut client: GeyserGrpcClient<F>) -> anyhow::Re
             owner: vec![
                 solana_sdk::stake::program::ID.to_string(),
                 solana_sdk::vote::program::ID.to_string(),
-                solana_sdk::sysvar::stake_history::ID.to_string(),
+                //                solana_sdk::sysvar::stake_history::ID.to_string(),
                 //                solana_sdk::system_program::ID.to_string(),
             ],
             filters: vec![],
@@ -280,7 +280,7 @@ async fn run_loop<F: Interceptor>(mut client: GeyserGrpcClient<F>) -> anyhow::Re
                                 if let Err(err) = crate::leader_schedule::save_schedule_on_file("stakes", &current_stake) {
                                     log::error!("Error during current stakes saving:{err}");
                                 }
-                                log::info!("RPC save_stakes END");
+                                log::warn!("RPC save_stakes END");
 
                             }
                         });
@@ -329,7 +329,6 @@ async fn run_loop<F: Interceptor>(mut client: GeyserGrpcClient<F>) -> anyhow::Re
             //Manage RPC call result execution
             Some(Ok(event)) = spawned_leader_schedule_task.next() =>  {
                 let new_leader_schedule = crate::leader_schedule::run_leader_schedule_events(
-                    RPC_URL.to_string(),
                     event,
                     &mut spawned_leader_schedule_task,
                     &mut stakestore,
@@ -401,7 +400,6 @@ async fn run_loop<F: Interceptor>(mut client: GeyserGrpcClient<F>) -> anyhow::Re
                                         if bootstrap_data.done {
                                             if let Some(init_event) = schedule_event {
                                                 crate::leader_schedule::run_leader_schedule_events(
-                                                    RPC_URL.to_string(),
                                                     init_event,
                                                     &mut spawned_leader_schedule_task,
                                                     &mut stakestore,

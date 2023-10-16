@@ -150,7 +150,6 @@ InitLeaderscedule        MergeStore(stakes, votes, schedule)
 */
 
 pub fn run_leader_schedule_events(
-    rpc_url: String,
     event: LeaderScheduleEvent,
     bootstrap_tasks: &mut FuturesUnordered<JoinHandle<LeaderScheduleEvent>>,
     stakestore: &mut StakeStore,
@@ -163,7 +162,7 @@ pub fn run_leader_schedule_events(
             None
         }
         LeaderScheduleResult::Event(event) => {
-            run_leader_schedule_events(rpc_url, event, bootstrap_tasks, stakestore, votestore)
+            run_leader_schedule_events(event, bootstrap_tasks, stakestore, votestore)
         }
         LeaderScheduleResult::End(schedule) => Some(schedule),
     }
@@ -344,9 +343,36 @@ fn calculate_epoch_stakes(
                 )
             });
     match stake_history {
-        Some(ref mut stake_history) => stake_history.add(current_epoch, stake_history_entry),
+        Some(ref mut stake_history) => {
+            log::info!(
+                "Stake_history add epoch{current_epoch} stake history:{stake_history_entry:?}"
+            );
+            stake_history.add(current_epoch, stake_history_entry)
+        }
         None => log::warn!("Vote stake calculus without Stake History"),
     };
+
+    //get current stake history
+    match crate::bootstrap::get_stakehistory_account(crate::RPC_URL.to_string())
+        .ok()
+        .and_then(|rpc_history_account| {
+            crate::stakestore::read_historystake_from_account(rpc_history_account)
+        }) {
+        Some(rpc_history) => {
+            log::info!(
+                "Stake_history new epoch:{current_epoch} C:{:?} RPC:{:?}",
+                stake_history.as_ref().map(|h| h.get(current_epoch)),
+                rpc_history.get(current_epoch)
+            );
+            log::info!(
+                "Stake_history last epoch:{} C:{:?} RPC:{:?}",
+                current_epoch - 1,
+                stake_history.as_ref().map(|h| h.get(current_epoch - 1)),
+                rpc_history.get(current_epoch - 1)
+            );
+        }
+        None => log::error!("can't get rpc history from RPC"),
+    }
 
     //calculate schedule stakes.
     let delegated_stakes: HashMap<Pubkey, u64> =
