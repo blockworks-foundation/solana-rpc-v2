@@ -43,19 +43,15 @@ jsonrpsee = { version = "0.20.0", features = ["macros", "server", "full"] }
 #jsonrpsee-types = "0.20.0"
 thiserror = "1.0.40"
 
-#yellowstone-grpc-client = { path = "../../yellowstone-grpc/yellowstone-grpc-client" }
-#yellowstone-grpc-proto = { path = "../../yellowstone-grpc/yellowstone-grpc-proto" }
+yellowstone-grpc-client = { path = "../../yellowstone-grpc/yellowstone-grpc-client" }
+yellowstone-grpc-proto = { path = "../../yellowstone-grpc/yellowstone-grpc-proto" }
 
 
 #yellowstone-grpc-client = { git = "http://github.com/rpcpool/yellowstone-grpc", rev = "c89b89dfc5f03f11f45ac4a6e832386a1d94cb67" }
 #yellowstone-grpc-proto = { git = "http://github.com/rpcpool/yellowstone-grpc", rev = "c89b89dfc5f03f11f45ac4a6e832386a1d94cb67" }
 
-
-#yellowstone-grpc-client = "1.8.0+solana.1.16.1"
-#yellowstone-grpc-proto = "1.8.0+solana.1.16.1"
-
-yellowstone-grpc-client = "1.11.0+solana.1.16.14"
-yellowstone-grpc-proto = "1.10.0+solana.1.16.14"
+#yellowstone-grpc-client = "1.11.0+solana.1.16.14"
+#yellowstone-grpc-proto = "1.10.0+solana.1.16.14"
 
 solana-sdk = "1.16.14"
 solana-client = "1.16.14"
