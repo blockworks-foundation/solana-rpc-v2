@@ -262,6 +262,7 @@ pub fn merge_program_account_in_strake_map(
             },
         )
         .for_each(|(pk, delegated_stake, lamports)| {
+            log::info!("RPC merge {pk} stake:{delegated_stake:?}");
             let stake = StoredStake {
                 pubkey: pk,
                 lamports,

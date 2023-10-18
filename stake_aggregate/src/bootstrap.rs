@@ -78,6 +78,7 @@ pub struct BootstrapData {
     pub done: bool,
     pub sleep_time: u64,
     pub rpc_url: String,
+    pub current_epoch: u64,
 }
 
 fn process_bootstrap_event(
@@ -133,6 +134,25 @@ fn process_bootstrap_event(
             if stake_history.is_none() {
                 //TODO return error.
                 log::error!("Bootstrap error, can't read stake history.");
+            }
+
+            log::info!(
+                "Bootstrap epoch:{} stake history:{:?}",
+                data.current_epoch,
+                stake_history,
+            );
+
+            //verify that the history is up to date otherwise exit
+            //because schedule will be false.
+            if stake_history
+                .as_ref()
+                .and_then(|h| h.get(data.current_epoch - 1))
+                .is_none()
+            {
+                panic!(
+                    "Bootstrap stake history not up to date for epoch:{} exit",
+                    data.current_epoch
+                );
             }
 
             //merge new PA with stake map and vote map in a specific task

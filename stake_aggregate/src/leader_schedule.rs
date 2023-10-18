@@ -231,16 +231,16 @@ fn process_leadershedule_event(
                     let epoch_schedule = Arc::clone(&epoch_schedule);
                     let jh = tokio::task::spawn_blocking({
                         move || {
-                            let next_epoch = current_epoch + 1;
                             let epoch_vote_stakes = calculate_epoch_stakes(
                                 &stake_map,
                                 &vote_map,
                                 current_epoch,
-                                next_epoch,
                                 stake_history.as_mut(),
                                 &epoch_schedule,
                             );
 
+                            //calculate the schedule for next epoch using the current epoch start stake.
+                            let next_epoch = current_epoch + 1;
                             let leader_schedule = calculate_leader_schedule(
                                 &epoch_vote_stakes,
                                 next_epoch,
@@ -320,24 +320,47 @@ fn process_leadershedule_event(
     }
 }
 
+//     /// get the epoch for which the given slot should save off
+// ///  information about stakers
+// pub fn get_leader_schedule_epoch(&self, slot: Slot) -> Epoch {
+//     if slot < self.first_normal_slot {
+//         // until we get to normal slots, behave as if leader_schedule_slot_offset == slots_per_epoch
+//         self.get_epoch_and_slot_index(slot).0.saturating_add(1)
+//     } else {
+//         let new_slots_since_first_normal_slot = slot.saturating_sub(self.first_normal_slot);
+//         let new_first_normal_leader_schedule_slot =
+//             new_slots_since_first_normal_slot.saturating_add(self.leader_schedule_slot_offset);
+//         let new_epochs_since_first_normal_leader_schedule =
+//             new_first_normal_leader_schedule_slot
+//                 .checked_div(self.slots_per_epoch)
+//                 .unwrap_or(0);
+//         self.first_normal_epoch
+//             .saturating_add(new_epochs_since_first_normal_leader_schedule)
+//     }
+// }
+
 fn calculate_epoch_stakes(
     stake_map: &StakeMap,
     vote_map: &VoteMap,
-    current_epoch: u64,
-    next_epoch: u64,
+    new_epoch: u64,
     mut stake_history: Option<&mut StakeHistory>,
     epoch_schedule: &EpochSchedule,
 ) -> HashMap<Pubkey, (u64, Arc<StoredVote>)> {
     //update stake history with current end epoch stake values.
     let new_rate_activation_epoch =
         FeatureSet::default().new_warmup_cooldown_rate_epoch(epoch_schedule);
+
+    log::info!("calculate_epoch_stakes new_epoch:{new_epoch}",);
+
+    let ended_epoch = new_epoch - 1;
+    //update stake history for the ended epoch.
     let stake_history_entry =
         stake_map
             .values()
             .fold(StakeActivationStatus::default(), |acc, stake_account| {
                 let delegation = stake_account.stake;
                 acc + delegation.stake_activating_and_deactivating(
-                    current_epoch,
+                    ended_epoch,
                     stake_history.as_deref(),
                     new_rate_activation_epoch,
                 )
@@ -345,13 +368,14 @@ fn calculate_epoch_stakes(
     match stake_history {
         Some(ref mut stake_history) => {
             log::info!(
-                "Stake_history add epoch{current_epoch} stake history:{stake_history_entry:?}"
+                "Stake_history add epoch{ended_epoch} stake history:{stake_history_entry:?}"
             );
-            stake_history.add(current_epoch, stake_history_entry)
+            stake_history.add(ended_epoch, stake_history_entry)
         }
         None => log::warn!("Vote stake calculus without Stake History"),
     };
 
+    //Done for verification not in the algo
     //get current stake history
     match crate::bootstrap::get_stakehistory_account(crate::RPC_URL.to_string())
         .ok()
@@ -360,15 +384,15 @@ fn calculate_epoch_stakes(
         }) {
         Some(rpc_history) => {
             log::info!(
-                "Stake_history new epoch:{current_epoch} C:{:?} RPC:{:?}",
-                stake_history.as_ref().map(|h| h.get(current_epoch)),
-                rpc_history.get(current_epoch)
+                "Stake_history ended epoch:{ended_epoch} C:{:?} RPC:{:?}",
+                stake_history.as_ref().map(|h| h.get(ended_epoch)),
+                rpc_history.get(ended_epoch)
             );
             log::info!(
                 "Stake_history last epoch:{} C:{:?} RPC:{:?}",
-                current_epoch - 1,
-                stake_history.as_ref().map(|h| h.get(current_epoch - 1)),
-                rpc_history.get(current_epoch - 1)
+                ended_epoch - 1,
+                stake_history.as_ref().map(|h| h.get(ended_epoch - 1)),
+                rpc_history.get(ended_epoch - 1)
             );
         }
         None => log::error!("can't get rpc history from RPC"),
@@ -382,7 +406,7 @@ fn calculate_epoch_stakes(
                 let delegation = stake_account.stake;
                 let entry = delegated_stakes.entry(delegation.voter_pubkey).or_default();
                 *entry += delegation.stake(
-                    next_epoch,
+                    new_epoch,
                     stake_history.as_deref(),
                     new_rate_activation_epoch,
                 );
@@ -488,11 +512,16 @@ fn calculate_leader_schedule(
     epoch: u64,
     slots_in_epoch: u64,
 ) -> HashMap<String, Vec<usize>> {
-    let mut stakes: Vec<(Pubkey, u64)> = stake_vote_map
+    let stakes_map: HashMap<Pubkey, u64> = stake_vote_map
         .iter()
         .filter_map(|(_, (stake, vote_account))| {
-            (*stake > 0).then_some((vote_account.vote_data.node_pubkey, *stake))
+            (*stake != 0u64).then_some((vote_account.vote_data.node_pubkey, *stake))
         })
+        .into_grouping_map()
+        .aggregate(|acc, _node_pubkey, stake| Some(acc.unwrap_or_default() + stake));
+    let mut stakes: Vec<(Pubkey, u64)> = stakes_map
+        .into_iter()
+        .map(|(key, stake)| (key, stake))
         .collect();
 
     let mut seed = [0u8; 32];

@@ -247,6 +247,7 @@ async fn run_loop<F: Interceptor>(mut client: GeyserGrpcClient<F>) -> anyhow::Re
         done: false,
         sleep_time: 1,
         rpc_url: RPC_URL.to_string(),
+        current_epoch: current_epoch_state.get_current_epoch().epoch,
     };
     let jh = tokio::spawn(async move { BootstrapEvent::InitBootstrap });
     spawned_bootstrap_task.push(jh);

@@ -113,15 +113,19 @@ impl CurrentEpochSlotState {
     }
 
     pub async fn bootstrap(rpc_url: String) -> anyhow::Result<CurrentEpochSlotState> {
-        let rpc_client = RpcClient::new_with_commitment(rpc_url, CommitmentConfig::finalized());
+        let rpc_client = RpcClient::new_with_commitment(rpc_url, CommitmentConfig::confirmed());
 
         let epoch_cache = EpochCache::bootstrap_epoch(&rpc_client).await?;
+        let confirmed_slot = rpc_client.get_slot().await.unwrap_or(0);
 
-        Ok(CurrentEpochSlotState {
+        let mut state = CurrentEpochSlotState {
             current_slot: CurrentSlot::default(),
             epoch_cache,
             current_epoch_value: Epoch::default(),
-        })
+        };
+        state.current_slot.confirmed_slot = confirmed_slot;
+        state.current_epoch_value = state.epoch_cache.get_epoch_at_slot(confirmed_slot);
+        Ok(state)
     }
 
     // pub fn current_epoch_start_slot(&self) -> Slot {
