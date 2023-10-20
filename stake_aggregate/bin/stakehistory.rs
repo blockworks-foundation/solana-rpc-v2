@@ -1,3 +1,4 @@
+//cargo run --bin stakehistory
 use solana_client::client_error::ClientError;
 use solana_client::rpc_client::RpcClient;
 use solana_sdk::account::Account;

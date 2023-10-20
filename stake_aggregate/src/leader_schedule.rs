@@ -223,7 +223,7 @@ fn process_leadershedule_event(
     votestore: &mut VoteStore,
 ) -> LeaderScheduleResult {
     match event {
-        LeaderScheduleEvent::Init(current_epoch, slots_in_epoch, epoch_schedule) => {
+        LeaderScheduleEvent::Init(new_epoch, slots_in_epoch, epoch_schedule) => {
             match (extract_stakestore(stakestore), extract_votestore(votestore)) {
                 (Ok((stake_map, mut stake_history)), Ok(vote_map)) => {
                     //For test TODO put in extract and restore process to avoid to clone.
@@ -234,13 +234,13 @@ fn process_leadershedule_event(
                             let epoch_vote_stakes = calculate_epoch_stakes(
                                 &stake_map,
                                 &vote_map,
-                                current_epoch,
+                                new_epoch,
                                 stake_history.as_mut(),
                                 &epoch_schedule,
                             );
 
                             //calculate the schedule for next epoch using the current epoch start stake.
-                            let next_epoch = current_epoch + 1;
+                            let next_epoch = new_epoch + 1;
                             let leader_schedule = calculate_leader_schedule(
                                 &epoch_vote_stakes,
                                 next_epoch,
@@ -275,7 +275,7 @@ fn process_leadershedule_event(
                                     vote_stakes: epoch_vote_stakes,
                                     epoch: next_epoch,
                                 },
-                                (current_epoch, slots_in_epoch, epoch_schedule),
+                                (new_epoch, slots_in_epoch, epoch_schedule),
                                 stake_history,
                             )
                         }
@@ -285,7 +285,7 @@ fn process_leadershedule_event(
                 _ => {
                     log::error!("Create leadershedule init event error during extract store");
                     LeaderScheduleResult::Event(LeaderScheduleEvent::Init(
-                        current_epoch,
+                        new_epoch,
                         slots_in_epoch,
                         epoch_schedule,
                     ))
@@ -296,7 +296,7 @@ fn process_leadershedule_event(
             stake_map,
             vote_map,
             schedule_data,
-            (current_epoch, slots_in_epoch, epoch_schedule),
+            (new_epoch, slots_in_epoch, epoch_schedule),
             stake_history,
         ) => {
             log::info!("LeaderScheduleEvent::MergeStoreAndSaveSchedule RECV");
@@ -310,7 +310,7 @@ fn process_leadershedule_event(
                     //TODO remove this error using type state
                     log::warn!("LeaderScheduleEvent::MergeStoreAndSaveSchedule merge stake or vote fail, -restart Schedule");
                     LeaderScheduleResult::Event(LeaderScheduleEvent::Init(
-                        current_epoch,
+                        new_epoch,
                         slots_in_epoch,
                         epoch_schedule,
                     ))
