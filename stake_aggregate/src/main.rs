@@ -300,7 +300,7 @@ async fn run_loop<F: Interceptor>(mut client: GeyserGrpcClient<F>) -> anyhow::Re
                         };
 
                         if let Err(err) = tx.send((current_stakes, extract_slot)){
-                            println!("Channel error during sending back request status error:{err:?}");
+                            log::error!("Channel error during sending back request status error:{err:?}");
                         }
 
                         log::info!("RPC GetStakestore account send");
@@ -354,7 +354,7 @@ async fn run_loop<F: Interceptor>(mut client: GeyserGrpcClient<F>) -> anyhow::Re
                                             //log::trace!("Geyser receive new account");
                                             match account.owner {
                                                 solana_sdk::stake::program::ID => {
-                                                    log::info!("Geyser notif stake account:{}", account);
+                                                    //log::info!("Geyser notif stake account:{}", account);
                                                     if let Err(err) = stakestore.notify_stake_change(
                                                         account,
                                                         current_epoch_state.current_epoch_end_slot(),

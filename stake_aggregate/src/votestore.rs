@@ -189,15 +189,15 @@ fn vote_map_insert_vote(map: &mut VoteMap, vote_account_pk: Pubkey, vote_data: S
                 //     vote_data.vote_data.node_pubkey,
                 //     vote_data.vote_data.root_slot,
                 // );
-                if vote_data.vote_data.root_slot.is_none() {
-                    log::info!("Update vote account:{vote_account_pk} with None root slot.");
-                }
+                // if vote_data.vote_data.root_slot.is_none() {
+                //     log::info!("Update vote account:{vote_account_pk} with None root slot.");
+                // }
 
-                if voteacc.vote_data.root_slot.is_none() {
-                    log::info!(
-                        "Update vote account:{vote_account_pk} that were having None root slot."
-                    );
-                }
+                // if voteacc.vote_data.root_slot.is_none() {
+                //     log::info!(
+                //         "Update vote account:{vote_account_pk} that were having None root slot."
+                //     );
+                // }
 
                 *voteacc = Arc::new(vote_data);
             }
