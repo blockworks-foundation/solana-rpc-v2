@@ -19,6 +19,10 @@ path = "bin/read_stake_export.rs"
 name = "stakehistory"
 path = "bin/stakehistory.rs"
 
+[[bin]]
+name = "sysvaraccount"
+path = "bin/sysvaraccount.rs"
+
 
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html

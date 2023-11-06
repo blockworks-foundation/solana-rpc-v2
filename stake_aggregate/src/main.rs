@@ -195,7 +195,7 @@ async fn run_loop<F: Interceptor>(mut client: GeyserGrpcClient<F>) -> anyhow::Re
             owner: vec![
                 solana_sdk::stake::program::ID.to_string(),
                 solana_sdk::vote::program::ID.to_string(),
-                //                solana_sdk::sysvar::stake_history::ID.to_string(),
+                solana_sdk::sysvar::stake_history::ID.to_string(),
                 //                solana_sdk::system_program::ID.to_string(),
             ],
             filters: vec![],
