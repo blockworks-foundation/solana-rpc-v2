@@ -1,6 +1,5 @@
 use anyhow::bail;
 use futures_util::StreamExt;
-use solana_client::client_error::ClientError;
 use solana_client::rpc_client::RpcClient;
 use solana_client::rpc_response::Response;
 use solana_sdk::commitment_config::CommitmentConfig;
@@ -14,19 +13,14 @@ use yellowstone_grpc_proto::{
     tonic::service::Interceptor,
 };
 
-//const GRPC_URL: &str = "http://localhost:10000";
-//const RPC_URL: &str = "http://localhost:8899";
-const GRPC_URL: &str = "http://147.28.169.13:10000";
-const RPC_URL: &str = "http://147.28.169.13:8899";
+const GRPC_URL: &str = "http://localhost:10000";
+const RPC_URL: &str = "http://localhost:8899";
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt::init();
 
-    let mut client = GeyserGrpcClient::connect(GRPC_URL, None::<&'static str>, None)?;
-
-    let version = client.get_version().await?;
-    println!("Version: {:?}", version);
+    let client = GeyserGrpcClient::connect(GRPC_URL, None::<&'static str>, None)?;
 
     let ctrl_c_signal = tokio::signal::ctrl_c();
 
@@ -76,8 +70,8 @@ async fn run_loop<F: Interceptor>(
         accounts_filter.insert(
             "client".to_owned(),
             SubscribeRequestFilterAccounts {
-                account: vec![],
-                owner: vec![id.to_string()],
+                account: vec![id.to_string()],
+                owner: vec![],
                 filters: vec![],
             },
         );
@@ -99,21 +93,26 @@ async fn run_loop<F: Interceptor>(
     while let Some(Ok(update)) = confirmed_stream.next().await {
         match update.update_oneof {
             Some(UpdateOneof::Account(account)) => {
+                log::info!("Geyser receive account at slot:{}", account.slot);
                 if let Some(account) = account.account {
-                    let owner = Pubkey::try_from(account.owner).expect("valid pubkey");
-                    log::info!("Geyser notif for account account:{:?}", owner);
+                    let acc_id = Pubkey::try_from(account.pubkey).expect("valid pubkey");
+                    log::info!("Geyser notif for account account:{:?}", acc_id);
 
-                    match accounts.iter().filter(|(id, _)| *id == owner).next() {
+                    match accounts.iter().filter(|(id, _)| *id == acc_id).next() {
                         Some((_, name)) => {
                             log::info!("Geyser receive notification for account:{name}")
                         }
                         None => log::warn!(
-                            "Geyser receive a notification from a unknown account:{owner}"
+                            "Geyser receive a notification from a unknown account:{acc_id}"
                         ),
                     }
                 }
             }
-            Some(UpdateOneof::Slot(_)) => (),
+            Some(UpdateOneof::Slot(slot)) => log::info!(
+                "Geyser receive slot:{} commitment:{:?}",
+                slot.slot,
+                slot.status()
+            ),
             Some(UpdateOneof::Ping(_)) => {
                 log::trace!("GRPC Ping");
             }
