@@ -1,6 +1,9 @@
-use solana_sdk::commitment_config::CommitmentConfig;
 use anyhow::bail;
 use futures_util::StreamExt;
+use solana_client::client_error::ClientError;
+use solana_client::rpc_client::RpcClient;
+use solana_client::rpc_response::Response;
+use solana_sdk::commitment_config::CommitmentConfig;
 use solana_sdk::pubkey::Pubkey;
 use std::collections::HashMap;
 use yellowstone_grpc_client::GeyserGrpcClient;
@@ -10,12 +13,11 @@ use yellowstone_grpc_proto::{
     prelude::{subscribe_update::UpdateOneof, SubscribeRequestFilterSlots},
     tonic::service::Interceptor,
 };
-use solana_client::rpc_response::Response;
-use solana_client::client_error::ClientError;
-use solana_client::rpc_client::RpcClient;
 
-const GRPC_URL: &str = "http://localhost:10000";
-const RPC_URL: &str = "http://localhost:8899";
+//const GRPC_URL: &str = "http://localhost:10000";
+//const RPC_URL: &str = "http://localhost:8899";
+const GRPC_URL: &str = "http://147.28.169.13:10000";
+const RPC_URL: &str = "http://147.28.169.13:8899";
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -28,8 +30,26 @@ async fn main() -> anyhow::Result<()> {
 
     let ctrl_c_signal = tokio::signal::ctrl_c();
 
+    let sysvar_account_list = [
+        (solana_sdk::sysvar::clock::ID, "Clock"),
+        (solana_sdk::sysvar::epoch_schedule::ID, "Epoch Schedule"),
+        (solana_sdk::sysvar::fees::ID, "Fee"),
+        (solana_sdk::sysvar::instructions::ID, "Instructions"),
+        (
+            solana_sdk::sysvar::recent_blockhashes::ID,
+            "Recent Blockhashes",
+        ),
+        (solana_sdk::sysvar::rent::ID, "Rent"),
+        (solana_sdk::sysvar::rewards::ID, "Rewards"),
+        (solana_sdk::sysvar::slot_hashes::ID, "Slot Hashes"),
+        (solana_sdk::sysvar::slot_history::ID, "Slot  History"),
+        (solana_sdk::sysvar::stake_history::ID, "Stake history"),
+    ];
+
+    load_accounts_from_rpc(&sysvar_account_list);
+
     tokio::select! {
-        res = run_loop(client) => {
+        res = run_loop(client, &sysvar_account_list) => {
             // This should never happen
             log::error!("Services quit unexpectedly {res:?}");
         }
@@ -41,32 +61,35 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-async fn run_loop<F: Interceptor>(mut client: GeyserGrpcClient<F>) -> anyhow::Result<()> {
+async fn run_loop<F: Interceptor>(
+    mut client: GeyserGrpcClient<F>,
+    accounts: &[(Pubkey, &str)],
+) -> anyhow::Result<()> {
     //subscribe Geyser grpc
     //slot subscription
     let mut slots = HashMap::new();
     slots.insert("client".to_string(), SubscribeRequestFilterSlots {});
 
     //account subscription
-    let mut accounts: HashMap<String, SubscribeRequestFilterAccounts> = HashMap::new();
-    accounts.insert(
-        "client".to_owned(),
-        SubscribeRequestFilterAccounts {
-            account: vec![],
-            owner: vec![
-                solana_sdk::sysvar::stake_history::ID.to_string(),
-            ],
-            filters: vec![],
-        },
-    );
+    let mut accounts_filter: HashMap<String, SubscribeRequestFilterAccounts> = HashMap::new();
+    for (id, _) in accounts {
+        accounts_filter.insert(
+            "client".to_owned(),
+            SubscribeRequestFilterAccounts {
+                account: vec![],
+                owner: vec![id.to_string()],
+                filters: vec![],
+            },
+        );
+    }
 
     let mut confirmed_stream = client
         .subscribe_once(
             slots.clone(),
-            accounts.clone(),   //accounts
+            accounts_filter,    //accounts
             Default::default(), //tx
             Default::default(), //entry
-            Default::default(),     //full block
+            Default::default(), //full block
             Default::default(), //block meta
             Some(CommitmentLevel::Confirmed),
             vec![],
@@ -78,11 +101,15 @@ async fn run_loop<F: Interceptor>(mut client: GeyserGrpcClient<F>) -> anyhow::Re
             Some(UpdateOneof::Account(account)) => {
                 if let Some(account) = account.account {
                     let owner = Pubkey::try_from(account.owner).expect("valid pubkey");
-                    match owner {
-                        solana_sdk::sysvar::stake_history::ID => {
-                            log::info!("Geyser notif Stake History account:{:?}", owner);
+                    log::info!("Geyser notif for account account:{:?}", owner);
+
+                    match accounts.iter().filter(|(id, _)| *id == owner).next() {
+                        Some((_, name)) => {
+                            log::info!("Geyser receive notification for account:{name}")
                         }
-                        _ => log::warn!("receive an account notification from a unknown owner:{owner:?}"),
+                        None => log::warn!(
+                            "Geyser receive a notification from a unknown account:{owner}"
+                        ),
                     }
                 }
             }
@@ -96,15 +123,22 @@ async fn run_loop<F: Interceptor>(mut client: GeyserGrpcClient<F>) -> anyhow::Re
         };
     }
     Ok(())
-
 }
 
-fn load_account_from_rpc() {
+fn load_accounts_from_rpc(accounts: &[(Pubkey, &str)]) {
     let rpc_client = RpcClient::new(RPC_URL);
-    match rpc_client.get_account_with_commitment(&solana_sdk::sysvar::stake_history::id(), CommitmentConfig::confirmed()) {
-        Ok(Response { context: Some(_), .. }) => log::info!("RPC get_account return the stake history account"),
-        Ok(Response { context: None, .. }) => log::info!("RPC get_account doesn't find the stake history account"),
-        Err(_) => log::error!("Error during RPC call:{err}")
+    for (id, name) in accounts {
+        load_account_from_rpc(*id, name, &rpc_client);
     }
-
+}
+fn load_account_from_rpc(id: Pubkey, name: &str, rpc_client: &RpcClient) {
+    match rpc_client.get_account_with_commitment(&id, CommitmentConfig::confirmed()) {
+        Ok(Response { value: Some(_), .. }) => {
+            log::info!("RPC get_account return the {name} account")
+        }
+        Ok(Response { value: None, .. }) => {
+            log::info!("RPC get_account doesn't find the {name} account")
+        }
+        Err(err) => log::error!("Error during RPC call:{err}"),
+    }
 }
