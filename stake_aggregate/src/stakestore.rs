@@ -359,6 +359,14 @@ async fn send_verification(
         .unwrap();
 }
 
+fn verify_account_len(account_keys: &[Pubkey], instr_accounts: &[u8], indexes: Vec<usize>) -> bool {
+    !indexes
+        .into_iter()
+        .filter(|index| (instr_accounts[*index] as usize) >= account_keys.len())
+        .next()
+        .is_some()
+}
+
 pub async fn process_stake_tx_message(
     stake_sender: &mut Sender<(String, Pubkey, Option<StoredStake>)>,
     stakestore: &mut StakeStore,
@@ -410,10 +418,14 @@ pub async fn process_stake_tx_message(
                 "custodian": lockup.custodian.to_string(),
             });
 
-            log::info!("StakeInstruction::Initialize authorized:{authorized} lockup:{lockup} stakeAccount:{} rentSysvar:{}"
+            if verify_account_len(&account_keys, &instruction.accounts, vec![0, 1]) {
+                log::info!("StakeInstruction::Initialize authorized:{authorized} lockup:{lockup} stakeAccount:{} rentSysvar:{}"
                     , account_keys[instruction.accounts[0] as usize].to_string()
                     , account_keys[instruction.accounts[1] as usize].to_string()
                 );
+            } else {
+                log::warn!("StakeInstruction::Initialize authorized:{authorized} lockup:{lockup} Index error in instruction:{:?}",  instruction.accounts);
+            }
 
             send_verification(
                 stake_sender,
@@ -424,6 +436,13 @@ pub async fn process_stake_tx_message(
             .await;
         }
         StakeInstruction::Authorize(new_authorized, authority_type) => {
+            if !verify_account_len(&account_keys, &instruction.accounts, vec![0, 1, 2]) {
+                log::warn!(
+                    "StakeInstruction::Authorize authorized Index error in instruction:{:?}",
+                    instruction.accounts
+                );
+                return;
+            }
             let value = json!({
                 "stakeAccount": account_keys[instruction.accounts[0] as usize].to_string(),
                 "clockSysvar": account_keys[instruction.accounts[1] as usize].to_string(),
@@ -448,6 +467,13 @@ pub async fn process_stake_tx_message(
             .await;
         }
         StakeInstruction::DelegateStake => {
+            if !verify_account_len(&account_keys, &instruction.accounts, vec![0, 1, 2, 3, 4, 5]) {
+                log::warn!(
+                    "StakeInstruction::DelegateStake authorized Index error in instruction:{:?}",
+                    instruction.accounts
+                );
+                return;
+            }
             let info = json!({
                 "stakeAccount": account_keys[instruction.accounts[0] as usize].to_string(),
                 "voteAccount": account_keys[instruction.accounts[1] as usize].to_string(),
@@ -467,6 +493,13 @@ pub async fn process_stake_tx_message(
             .await;
         }
         StakeInstruction::Split(lamports) => {
+            if !verify_account_len(&account_keys, &instruction.accounts, vec![0, 1, 2]) {
+                log::warn!(
+                    "StakeInstruction::Split authorized Index error in instruction:{:?}",
+                    instruction.accounts
+                );
+                return;
+            }
             let info = json!({
                 "stakeAccount": account_keys[instruction.accounts[0] as usize].to_string(),
                 "newSplitAccount": account_keys[instruction.accounts[1] as usize].to_string(),
@@ -484,6 +517,13 @@ pub async fn process_stake_tx_message(
             .await;
         }
         StakeInstruction::Withdraw(lamports) => {
+            if !verify_account_len(&account_keys, &instruction.accounts, vec![0, 1, 2, 3, 4]) {
+                log::warn!(
+                    "StakeInstruction::Withdraw authorized Index error in instruction:{:?}",
+                    instruction.accounts
+                );
+                return;
+            }
             let info = json!({
                 "stakeAccount": account_keys[instruction.accounts[0] as usize].to_string(),
                 "destination": account_keys[instruction.accounts[1] as usize].to_string(),
@@ -505,6 +545,13 @@ pub async fn process_stake_tx_message(
             .await;
         }
         StakeInstruction::Deactivate => {
+            if !verify_account_len(&account_keys, &instruction.accounts, vec![0, 1, 2]) {
+                log::warn!(
+                    "StakeInstruction::Deactivate authorized Index error in instruction:{:?}",
+                    instruction.accounts
+                );
+                return;
+            }
             let info = json!({
                 "stakeAccount": account_keys[instruction.accounts[0] as usize].to_string(),
                 "clockSysvar": account_keys[instruction.accounts[1] as usize].to_string(),
@@ -513,6 +560,13 @@ pub async fn process_stake_tx_message(
             log::info!("StakeInstruction::Deactivate infos:{info}");
         }
         StakeInstruction::SetLockup(lockup_args) => {
+            if !verify_account_len(&account_keys, &instruction.accounts, vec![0, 1]) {
+                log::warn!(
+                    "StakeInstruction::SetLockup authorized Index error in instruction:{:?}",
+                    instruction.accounts
+                );
+                return;
+            }
             let unix_timestamp = lockup_args
                 .unix_timestamp
                 .map(|timestamp| json!(timestamp))
@@ -540,6 +594,13 @@ pub async fn process_stake_tx_message(
             .await;
         }
         StakeInstruction::AuthorizeWithSeed(args) => {
+            if !verify_account_len(&account_keys, &instruction.accounts, vec![0, 1]) {
+                log::warn!(
+                    "StakeInstruction::AuthorizeWithSeed authorized Index error in instruction:{:?}",
+                    instruction.accounts
+                );
+                return;
+            }
             let info = json!({
                     "stakeAccount": account_keys[instruction.accounts[0] as usize].to_string(),
                     "authorityBase": account_keys[instruction.accounts[1] as usize].to_string(),
@@ -563,6 +624,13 @@ pub async fn process_stake_tx_message(
             .await;
         }
         StakeInstruction::InitializeChecked => {
+            if !verify_account_len(&account_keys, &instruction.accounts, vec![0, 1, 2, 3]) {
+                log::warn!(
+                    "StakeInstruction::InitializeChecked authorized Index error in instruction:{:?}",
+                    instruction.accounts
+                );
+                return;
+            }
             let info = json!({
                 "stakeAccount": account_keys[instruction.accounts[0] as usize].to_string(),
                 "rentSysvar": account_keys[instruction.accounts[1] as usize].to_string(),
@@ -580,6 +648,13 @@ pub async fn process_stake_tx_message(
             .await;
         }
         StakeInstruction::AuthorizeChecked(authority_type) => {
+            if !verify_account_len(&account_keys, &instruction.accounts, vec![0, 1, 2, 3]) {
+                log::warn!(
+                    "StakeInstruction::AuthorizeChecked authorized Index error in instruction:{:?}",
+                    instruction.accounts
+                );
+                return;
+            }
             let info = json!({
                 "stakeAccount": account_keys[instruction.accounts[0] as usize].to_string(),
                 "clockSysvar": account_keys[instruction.accounts[1] as usize].to_string(),
@@ -600,6 +675,13 @@ pub async fn process_stake_tx_message(
             .await;
         }
         StakeInstruction::AuthorizeCheckedWithSeed(args) => {
+            if !verify_account_len(&account_keys, &instruction.accounts, vec![0, 1, 2, 3]) {
+                log::warn!(
+                    "StakeInstruction::AuthorizeCheckedWithSeed authorized Index error in instruction:{:?}",
+                    instruction.accounts
+                );
+                return;
+            }
             let info = json!({
                     "stakeAccount": account_keys[instruction.accounts[0] as usize].to_string(),
                     "authorityBase": account_keys[instruction.accounts[1] as usize].to_string(),
@@ -624,6 +706,13 @@ pub async fn process_stake_tx_message(
             .await;
         }
         StakeInstruction::SetLockupChecked(lockup_args) => {
+            if !verify_account_len(&account_keys, &instruction.accounts, vec![0, 1, 2]) {
+                log::warn!(
+                    "StakeInstruction::SetLockupChecked authorized Index error in instruction:{:?}",
+                    instruction.accounts
+                );
+                return;
+            }
             let unix_timestamp = lockup_args
                 .unix_timestamp
                 .map(|timestamp| json!(timestamp))
@@ -652,6 +741,13 @@ pub async fn process_stake_tx_message(
             log::info!("StakeInstruction::GetMinimumDelegation");
         }
         StakeInstruction::DeactivateDelinquent => {
+            if !verify_account_len(&account_keys, &instruction.accounts, vec![0, 1, 2]) {
+                log::warn!(
+                    "StakeInstruction::DeactivateDelinquent authorized Index error in instruction:{:?}",
+                    instruction.accounts
+                );
+                return;
+            }
             let info = json!({
                 "stakeAccount": account_keys[instruction.accounts[0] as usize].to_string(),
                 "voteAccount": account_keys[instruction.accounts[1] as usize].to_string(),
@@ -668,6 +764,13 @@ pub async fn process_stake_tx_message(
             .await;
         }
         StakeInstruction::Redelegate => {
+            if !verify_account_len(&account_keys, &instruction.accounts, vec![0, 1, 2, 3, 4]) {
+                log::warn!(
+                    "StakeInstruction::Redelegate authorized Index error in instruction:{:?}",
+                    instruction.accounts
+                );
+                return;
+            }
             let info = json!({
                 "stakeAccount": account_keys[instruction.accounts[0] as usize].to_string(),
                 "newStakeAccount": account_keys[instruction.accounts[1] as usize].to_string(),
@@ -686,6 +789,13 @@ pub async fn process_stake_tx_message(
             .await;
         }
         StakeInstruction::Merge => {
+            if !verify_account_len(&account_keys, &instruction.accounts, vec![0, 1, 2, 3, 4]) {
+                log::warn!(
+                    "StakeInstruction::Merge authorized Index error in instruction:{:?}",
+                    instruction.accounts
+                );
+                return;
+            }
             let info = json!({
                 "destination": account_keys[instruction.accounts[0] as usize].to_string(),
                 "source": account_keys[instruction.accounts[1] as usize].to_string(),
