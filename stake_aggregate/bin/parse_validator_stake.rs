@@ -98,7 +98,7 @@ async fn main() -> anyhow::Result<()> {
     };
 
     let leader_schedule = calculate_leader_schedule(validator_stakes, &epoch).unwrap();
-    verify_schedule(leader_schedule).unwrap();
+    verify_schedule(leader_schedule, &aggregate_stake_file_path).unwrap();
 
     Ok(())
 }
@@ -128,7 +128,7 @@ fn calculate_leader_schedule(
     ))
 }
 
-fn verify_schedule(schedule: LeaderSchedule) -> anyhow::Result<()> {
+fn verify_schedule(schedule: LeaderSchedule, file_name: &str) -> anyhow::Result<()> {
     log::info!("verify_schedule Start.");
     let rpc_client = RpcClient::new_with_timeout_and_commitment(
         RPC_URL.to_string(),
@@ -154,6 +154,16 @@ fn verify_schedule(schedule: LeaderSchedule) -> anyhow::Result<()> {
 
     //map leaderscheudle to HashMap<PubKey, Vec<slot>>
     let slot_leaders = schedule.get_slot_leaders();
+
+    //save_slot_leaders
+    let string_slot_leader: Vec<String> = slot_leaders.iter().map(|pk| pk.to_string()).collect();
+    let serialized_schedule = serde_json::to_string(&string_slot_leader).unwrap();
+    let filename = format!("{file_name}.schedule.json",);
+    // Write to the file
+    let mut file = File::create(filename).unwrap();
+    file.write_all(serialized_schedule.as_bytes()).unwrap();
+    file.flush().unwrap();
+
     log::info!("aggregate_leader_schedule len:{}", slot_leaders.len());
     let mut input_leader_schedule: HashMap<String, Vec<usize>> = HashMap::new();
     for (slot, pubkey) in slot_leaders.iter().copied().enumerate() {

@@ -46,14 +46,14 @@ fn stake_map_notify_stake(map: &mut StakeMap, stake: StoredStake) {
                                                 //doesn't erase new state with an old one. Can arrive during bootstrapping.
                                                 //several instructions can be done in the same slot.
             if strstake.last_update_slot <= stake.last_update_slot {
-                log::trace!("stake_map_notify_stake Stake store updated stake: {} old_stake:{strstake:?} stake:{stake:?}", stake.pubkey);
+                log::info!("stake_map_notify_stake updated stake: {} old_stake:{strstake:?} stake:{stake:?}", stake.pubkey);
                 *strstake = stake;
             }
         }
         // If value doesn't exist yet, then insert a new value of 1
         std::collections::hash_map::Entry::Vacant(vacant) => {
-            log::trace!(
-                "stake_map_notify_stake Stake store insert stake: {} stake:{stake:?}",
+            log::info!(
+                "stake_map_notify_stake insert stake: {} stake:{stake:?}",
                 stake.pubkey
             );
             vacant.insert(stake);
@@ -347,16 +347,16 @@ pub async fn start_stake_verification_loop(
 }
 
 async fn send_verification(
-    stake_sender: &mut Sender<(String, Pubkey, Option<StoredStake>)>,
-    stakestore: &mut StakeStore,
-    instr: &str,
-    stake_pybkey: Pubkey,
+    _stake_sender: &mut Sender<(String, Pubkey, Option<StoredStake>)>,
+    _stakestore: &mut StakeStore,
+    _instr: &str,
+    _stake_pybkey: Pubkey,
 ) {
-    let current_stake = stakestore.stakes.get(&stake_pybkey).cloned();
-    stake_sender
-        .send((instr.to_string(), stake_pybkey, current_stake))
-        .await
-        .unwrap();
+    // let current_stake = stakestore.stakes.get(&stake_pybkey).cloned();
+    // stake_sender
+    //     .send((instr.to_string(), stake_pybkey, current_stake))
+    //     .await
+    //     .unwrap();
 }
 
 fn verify_account_len(account_keys: &[Pubkey], instr_accounts: &[u8], indexes: Vec<usize>) -> bool {
@@ -374,8 +374,8 @@ pub async fn process_stake_tx_message(
     instruction: CompiledInstruction,
     //for debug and trace purpose.
     program_id_index: u32,
-    tx_slot: Slot,
-    current_end_epoch_slot: u64,
+    _tx_slot: Slot,
+    _current_end_epoch_slot: u64,
 ) {
     //for tracing purpose
     let account_keys: Vec<Pubkey> = account_keys_vec
@@ -389,20 +389,21 @@ pub async fn process_stake_tx_message(
         .collect();
 
     //for debug get stake account index
-    log::info!(
+    log::trace!(
         "Found tx with stake account accounts:{:?} stake account index:{program_id_index:?}",
         account_keys,
     );
 
     //merge and delegate has 1 instruction. Create as 2 instructions and the first is not a StakeInstruction.
-    log::info!(
+    log::trace!(
         "Before read instruction of program_id_index:{}",
         instruction.program_id_index
     );
     let Ok(stake_inst) = bincode::deserialize::<StakeInstruction>(&instruction.data) else {
-        log::info!(
-            "Error during stake instruction decoding  :{:?}",
-            &instruction.data
+        log::warn!(
+            "Error during stake instruction decoding  :{:?} stake_account:{:?}",
+            &instruction.data,
+            account_keys,
         );
         return;
     };
@@ -804,28 +805,28 @@ pub async fn process_stake_tx_message(
                 "stakeAuthority": account_keys[instruction.accounts[4] as usize].to_string(),
             });
             log::info!("StakeInstruction::Merge infos:{info}");
-            let source_account = &account_keys_vec[instruction.accounts[1] as usize];
-            let source_bytes: [u8; 32] = source_account[..solana_sdk::pubkey::PUBKEY_BYTES]
-                .try_into()
-                .unwrap();
-            let source_pubkey = Pubkey::new_from_array(source_bytes);
-            log::info!(
-                "DETECT MERGE for source account:{}",
-                source_pubkey.to_string()
-            );
+            // let source_account = &account_keys_vec[instruction.accounts[1] as usize];
+            // let source_bytes: [u8; 32] = source_account[..solana_sdk::pubkey::PUBKEY_BYTES]
+            //     .try_into()
+            //     .unwrap();
+            //let source_pubkey = Pubkey::new_from_array(source_bytes);
+            // log::info!(
+            //     "DETECT MERGE for source account:{}",
+            //     source_pubkey.to_string()
+            // );
 
-            stakestore.notify_stake_action(
-                ExtractedAction::Remove(source_pubkey, tx_slot),
-                current_end_epoch_slot,
-            );
-            stakestore.notify_stake_action(
-                ExtractedAction::Merge {
-                    source_account: account_keys[instruction.accounts[1] as usize],
-                    destination_account: account_keys[instruction.accounts[0] as usize],
-                    update_slot: tx_slot,
-                },
-                current_end_epoch_slot,
-            );
+            // stakestore.notify_stake_action(
+            //     ExtractedAction::Remove(source_pubkey, tx_slot),
+            //     current_end_epoch_slot,
+            // );
+            // stakestore.notify_stake_action(
+            //     ExtractedAction::Merge {
+            //         source_account: account_keys[instruction.accounts[1] as usize],
+            //         destination_account: account_keys[instruction.accounts[0] as usize],
+            //         update_slot: tx_slot,
+            //     },
+            //     current_end_epoch_slot,
+            // );
 
             // send_verification(
             //     stake_sender,
