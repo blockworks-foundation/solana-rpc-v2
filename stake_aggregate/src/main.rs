@@ -411,18 +411,21 @@ async fn run_loop<F: Interceptor>(mut client: GeyserGrpcClient<F>) -> anyhow::Re
                                         }
 
                                         if let CommitmentLevel::Confirmed = slot.status() {
-                                        //process block at slot
-                                        match blocks_cache.remove(&slot.slot) {
-                                            Some(block) => process_block(block, slot.slot),
-                                            None => log::error!("No block found for slot:{}", slot.slot),
-                                        }                                        }
+                                            log::trace!("Receive confirmed slot:{}", slot.slot);
+
+                                            //process block at slot
+                                            match blocks_cache.remove(&slot.slot) {
+                                                Some(block) => process_block(block, slot.slot),
+                                                None => log::error!("No block found for slot:{}", slot.slot),
+                                            }
+                                        }
 
                                     }
                                     Some(UpdateOneof::BlockMeta(block_meta)) => {
                                         log::info!("Receive Block Meta at slot: {}", block_meta.slot);
                                     }
                                     Some(UpdateOneof::Block(block)) => {
-                                        log::trace!("Receive Block at slot: {} hash:{} parent_slot:{}",
+                                        log::info!("Receive Block at slot: {} hash:{} parent_slot:{}",
                                             block.slot,
                                             block.blockhash,
                                             block.parent_slot,
