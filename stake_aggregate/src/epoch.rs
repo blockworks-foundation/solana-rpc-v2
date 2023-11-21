@@ -7,9 +7,91 @@ use solana_client::nonblocking::rpc_client::RpcClient;
 use solana_sdk::commitment_config::{CommitmentConfig, CommitmentLevel};
 use solana_sdk::epoch_info::EpochInfo;
 use solana_sdk::sysvar::epoch_schedule::EpochSchedule;
+use std::collections::BTreeMap;
+use std::collections::BTreeSet;
+use std::ops::Bound;
 use std::sync::Arc;
 use yellowstone_grpc_proto::geyser::CommitmentLevel as GeyserCommitmentLevel;
+use yellowstone_grpc_proto::prelude::SubscribeUpdateBlock;
 use yellowstone_grpc_proto::prelude::SubscribeUpdateSlot;
+
+#[derive(Debug)]
+pub struct BlockSlotVerifier {
+    block_cache: BTreeMap<u64, SubscribeUpdateBlock>,
+    slot_cache: BTreeSet<u64>,
+}
+
+impl BlockSlotVerifier {
+    pub fn new() -> Self {
+        BlockSlotVerifier {
+            block_cache: BTreeMap::new(),
+            slot_cache: BTreeSet::new(),
+        }
+    }
+    pub fn process_slot(&mut self, slot: u64) -> Option<(u64, SubscribeUpdateBlock)> {
+        match self.block_cache.remove(&slot) {
+            //the block is already seen. Return slot/block.
+            Some(block) => Some((slot, block)),
+            None => {
+                self.slot_cache.insert(slot);
+                self.verify(slot);
+                None
+            }
+        }
+    }
+    pub fn process_block(
+        &mut self,
+        block: SubscribeUpdateBlock,
+    ) -> Option<(u64, SubscribeUpdateBlock)> {
+        let slot = block.slot;
+        if self.slot_cache.remove(&slot) {
+            //the slot is already seen. Return slot/block.
+            Some((slot, block))
+        } else {
+            //Cache block and  wait  for the slot
+            let old = self.block_cache.insert(slot, block);
+            if old.is_some() {
+                log::warn!("Receive 2 blocks for the same slot:{slot}");
+            }
+            None
+        }
+    }
+
+    fn verify(&mut self, current_slot: u64) {
+        //do some verification on cached block and slot
+        let old_slot: Vec<_> = self
+            .slot_cache
+            .range((
+                Bound::Unbounded,
+                Bound::Included(current_slot.saturating_sub(2)),
+            ))
+            .copied()
+            .collect();
+        if old_slot.len() > 0 {
+            log::error!("Missing block for slots:{:?}", old_slot);
+            for slot in &old_slot {
+                self.slot_cache.remove(&slot);
+            }
+        }
+
+        //verify that there's no too old block.
+        let old_block_slots: Vec<_> = self
+            .block_cache
+            .range((
+                Bound::Unbounded,
+                Bound::Included(current_slot.saturating_sub(2)),
+            ))
+            .map(|(slot, _)| slot)
+            .copied()
+            .collect();
+        if old_block_slots.len() > 0 {
+            log::error!("Missing slot for block  slot:{:?}", old_slot);
+            for slot in old_block_slots {
+                self.block_cache.remove(&slot);
+            }
+        }
+    }
+}
 
 #[derive(Debug, Default, Copy, Clone, PartialOrd, PartialEq, Eq, Ord, Serialize, Deserialize)]
 pub struct Epoch {

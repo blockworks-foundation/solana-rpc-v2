@@ -36,6 +36,7 @@ curl http://localhost:3001 -X POST -H "Content-Type: application/json" -d '
 
 use crate::bootstrap::BootstrapData;
 use crate::bootstrap::BootstrapEvent;
+use crate::epoch::BlockSlotVerifier;
 use crate::leader_schedule::LeaderScheduleData;
 use crate::stakestore::StakeStore;
 use crate::votestore::VoteStore;
@@ -261,7 +262,7 @@ async fn run_loop<F: Interceptor>(mut client: GeyserGrpcClient<F>) -> anyhow::Re
     //use  to process block at confirm slot.
     //at confirm  slot are send before the block.
     //Verify  that  the  last confirmed slot receive  is the  block slot.
-    let mut last_confirmed_slot = 0;
+    let mut block_slot_verifier = BlockSlotVerifier::new();
     loop {
         tokio::select! {
             Some(req) = request_rx.recv() => {
@@ -414,9 +415,10 @@ async fn run_loop<F: Interceptor>(mut client: GeyserGrpcClient<F>) -> anyhow::Re
 
                                         if let CommitmentLevel::Confirmed = slot.status() {
                                             log::trace!("Receive confirmed slot:{}", slot.slot);
-                                            last_confirmed_slot =  slot.slot;
+                                            if let  Some((slot,  block)) =  block_slot_verifier.process_slot(slot.slot) {
+                                                process_block(block, slot);
+                                            }
                                         }
-
                                     }
                                     Some(UpdateOneof::BlockMeta(block_meta)) => {
                                         log::info!("Receive Block Meta at slot: {}", block_meta.slot);
@@ -428,11 +430,9 @@ async fn run_loop<F: Interceptor>(mut client: GeyserGrpcClient<F>) -> anyhow::Re
                                             block.parent_slot,
                                         );
 
-                                        let  slot  = block.slot;
-                                        if last_confirmed_slot != 0 && last_confirmed_slot  != slot  {
-                                            log::error!("No block found for slot:{last_confirmed_slot}. Get bloc for slot:{slot}");
+                                        if let  Some((slot,  block)) =  block_slot_verifier.process_block(block) {
+                                            process_block(block, slot);
                                         }
-                                        process_block(block, slot);
 
                                     }
                                     Some(UpdateOneof::Ping(_)) => log::trace!("UpdateOneof::Ping"),
