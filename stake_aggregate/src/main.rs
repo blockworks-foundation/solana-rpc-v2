@@ -259,7 +259,9 @@ async fn run_loop<F: Interceptor>(mut client: GeyserGrpcClient<F>) -> anyhow::Re
     //     crate::stakestore::start_stake_verification_loop(RPC_URL.to_string()).await;
 
     //use  to process block at confirm slot.
-    let mut blocks_cache = HashMap::new();
+    //at confirm  slot are send before the block.
+    //Verify  that  the  last confirmed slot receive  is the  block slot.
+    let mut last_confirmed_slot = 0;
     loop {
         tokio::select! {
             Some(req) = request_rx.recv() => {
@@ -412,12 +414,7 @@ async fn run_loop<F: Interceptor>(mut client: GeyserGrpcClient<F>) -> anyhow::Re
 
                                         if let CommitmentLevel::Confirmed = slot.status() {
                                             log::trace!("Receive confirmed slot:{}", slot.slot);
-
-                                            //process block at slot
-                                            match blocks_cache.remove(&slot.slot) {
-                                                Some(block) => process_block(block, slot.slot),
-                                                None => log::error!("No block found for slot:{}", slot.slot),
-                                            }
+                                            last_confirmed_slot =  slot.slot;
                                         }
 
                                     }
@@ -425,17 +422,17 @@ async fn run_loop<F: Interceptor>(mut client: GeyserGrpcClient<F>) -> anyhow::Re
                                         log::info!("Receive Block Meta at slot: {}", block_meta.slot);
                                     }
                                     Some(UpdateOneof::Block(block)) => {
-                                        log::info!("Receive Block at slot: {} hash:{} parent_slot:{}",
+                                        log::trace!("Receive Block at slot: {} hash:{} parent_slot:{}",
                                             block.slot,
                                             block.blockhash,
                                             block.parent_slot,
                                         );
 
                                         let  slot  = block.slot;
-                                        let old_block = blocks_cache.insert(slot, block);
-                                        if old_block.is_some() {
-                                            log::warn!("Detect a fork on slot:{}", slot);
+                                        if last_confirmed_slot != 0 && last_confirmed_slot  != slot  {
+                                            log::error!("No block found for slot:{last_confirmed_slot}. Get bloc for slot:{slot}");
                                         }
+                                        process_block(block, slot);
 
                                     }
                                     Some(UpdateOneof::Ping(_)) => log::trace!("UpdateOneof::Ping"),
