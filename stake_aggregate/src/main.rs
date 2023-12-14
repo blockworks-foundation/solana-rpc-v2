@@ -186,7 +186,7 @@ async fn run_loop<F: Interceptor>(mut client: GeyserGrpcClient<F>) -> anyhow::Re
     //subscribe Geyser grpc
     //slot subscription
     let mut slots = HashMap::new();
-    slots.insert("client".to_string(), SubscribeRequestFilterSlots {});
+    slots.insert("client".to_string(), SubscribeRequestFilterSlots::default());
 
     //account subscription
     let mut accounts: HashMap<String, SubscribeRequestFilterAccounts> = HashMap::new();
@@ -197,8 +197,6 @@ async fn run_loop<F: Interceptor>(mut client: GeyserGrpcClient<F>) -> anyhow::Re
             owner: vec![
                 solana_sdk::stake::program::ID.to_string(),
                 solana_sdk::vote::program::ID.to_string(),
-                solana_sdk::sysvar::stake_history::ID.to_string(),
-                //                solana_sdk::system_program::ID.to_string(),
             ],
             filters: vec![],
         },
@@ -232,6 +230,7 @@ async fn run_loop<F: Interceptor>(mut client: GeyserGrpcClient<F>) -> anyhow::Re
             Default::default(), //block meta
             Some(CommitmentLevel::Confirmed),
             vec![],
+            None,
         )
         .await?;
 

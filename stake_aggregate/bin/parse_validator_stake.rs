@@ -17,8 +17,8 @@ use std::time::Duration;
 
 //const STAKE_FILE: &str = "epoch528_leader_schedule_stakes.txt";
 //const RPC_URL: &str = "http://localhost:8899";
-//const RPC_URL: &str = "https://api.testnet.solana.com";
-const RPC_URL: &str = "https://api.mainnet-beta.solana.com";
+const RPC_URL: &str = "https://api.testnet.solana.com";
+//const RPC_URL: &str = "https://api.mainnet-beta.solana.com";
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {

@@ -27,6 +27,10 @@ path = "bin/sysvaraccount.rs"
 name = "send_get_vote_account"
 path = "bin/send_get_vote_account.rs"
 
+[[bin]]
+name = "testdeleteacc"
+path = "bin/testdeleteacc.rs"
+
 
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
@@ -55,26 +59,42 @@ jsonrpsee = { version = "0.20.0", features = ["macros", "server", "full"] }
 #jsonrpsee-types = "0.20.0"
 thiserror = "1.0.40"
 
-#yellowstone-grpc-client = { path = "../../yellowstone-grpc/yellowstone-grpc-client" }
-#yellowstone-grpc-proto = { path = "../../yellowstone-grpc/yellowstone-grpc-proto" }
+#yellowstone-grpc-client = { path = "../../yellowstone-grpc-delete-account/yellowstone-grpc-client" }
+#yellowstone-grpc-proto = { path = "../../yellowstone-grpc-delete-account/yellowstone-grpc-proto" }
 
 
 #yellowstone-grpc-client = { git = "http://github.com/rpcpool/yellowstone-grpc", rev = "c89b89dfc5f03f11f45ac4a6e832386a1d94cb67" }
 #yellowstone-grpc-proto = { git = "http://github.com/rpcpool/yellowstone-grpc", rev = "c89b89dfc5f03f11f45ac4a6e832386a1d94cb67" }
 
-#yellowstone-grpc-client = "1.11.0+solana.1.16.14"
-#yellowstone-grpc-proto = "1.10.0+solana.1.16.14"
+yellowstone-grpc-client = "1.11.0+solana.1.16.14"
+yellowstone-grpc-proto = "1.10.0+solana.1.16.14"
 
 #yellowstone-grpc-client = "v1.10.0+solana.1.16.17"
 #yellowstone-grpc-proto = "v1.10.0+solana.1.16.17"
 
-yellowstone-grpc-client = "1.10.0"
-yellowstone-grpc-proto = "1.10.0"
+#yellowstone-grpc-client = "1.10.0"
+#yellowstone-grpc-proto = "1.10.0"
 
-solana-sdk = "1.16.14"
-solana-client = "1.16.14"
-solana-ledger = "1.16.14"
-solana-rpc-client-api = "1.16.14"
-solana-version = "1.16.14"
-solana-account-decoder = "1.16.14"
-solana-program = "1.16.14"
+ solana-sdk = "1.16.14"
+ solana-client = "1.16.14"
+ solana-ledger = "1.16.14"
+ solana-rpc-client-api = "1.16.14"
+ solana-version = "1.16.14"
+ solana-account-decoder = "1.16.14"
+ solana-program = "1.16.14"
+
+
+#patch  to build locally
+#solana-program = { path = "../../solana/sdk/program" , version = "=1.18.0"}
+#solana-sdk = { path = "../../solana/sdk" , version = "=1.18.0"}
+#solana-client = { path = "../../solana/client" , version = "=1.18.0"}
+#solana-rpc-client-api = { path = "../../solana/rpc-client-api" , version = "=1.18.0"}
+#solana-version = { path = "../../solana/version" , version = "=1.18.0"}
+#solana-account-decoder = { path = "../../solana/account-decoder" , version = "=1.18.0"}
+#solana-ledger = { path = "../../solana/ledger" , version = "=1.18.0"}
+
+
+#patch  to build locally
+#[patch.crates-io]
+#solana-program = { path = "../../solana/sdk/program" , version = "=1.18.0"}
+#solana-zk-token-sdk = { path = "../../solana/zk-token-sdk" , version = "=1.18.0"}
