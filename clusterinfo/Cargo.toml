@@ -36,6 +36,7 @@ solana-rpc-client-api = { path = "../../solana-geyzer-cluster/rpc-client-api" }
 solana-version = { path = "../../solana-geyzer-cluster/version"}
 solana-account-decoder = { path = "../../solana-geyzer-cluster/account-decoder" }
 solana-ledger = { path = "../../solana-geyzer-cluster/ledger"}
+solana-streamer = { path = "../../solana-geyzer-cluster/streamer"}
 
 
 #patch  to build locally
