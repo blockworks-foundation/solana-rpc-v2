@@ -109,10 +109,13 @@ where
                 });
             }
             Some(update) = cluster_info_stream.next() => {
-                match verify_node(&update, &socket_addr_space, shred_version) {
-                    true => {node_list.insert(update.pubkey.clone(), update);},
-                    false=> log::info!("verify_node fail for:{} for addr:{}", update.pubkey, update.gossip.unwrap_or("None".to_string())),
+                if verify_node(&update, &socket_addr_space, shred_version) {
+                    node_list.insert(update.pubkey.clone(), update);
                 }
+                // match verify_node(&update, &socket_addr_space, shred_version) {
+                //     true => {node_list.insert(update.pubkey.clone(), update);},
+                //     false=> log::info!("verify_node fail for:{} for addr:{}", update.pubkey, update.gossip.unwrap_or("None".to_string())),
+                // }
 
             }
         }
@@ -195,7 +198,7 @@ fn verify_clusters(
     //verify if all rpc are in geyzer
     for rpc in &rpc_cluster {
         if let None = geyzer_cluster.remove(&rpc.pubkey) {
-            log::info!("Rpc node not present in geyzer: {:?} ", rpc);
+            log::info!("Rpc node not present in geyzer: {} ", rpc.pubkey);
         }
     }
     geyzer_cluster.iter().for_each(|(key, node)| {
