@@ -100,7 +100,7 @@ where
                 current_shred_version = update.shred_version;
                 match verify_node(&update, &socket_addr_space) {
                     true => {node_list.insert(update.pubkey.clone(), update);},
-                    false=> log::info!("verify_node:{} for addr:{}", update.pubkey, update.gossip.unwrap_or("None".to_string())),
+                    false=> log::info!("verify_node fail for:{} for addr:{}", update.pubkey, update.gossip.unwrap_or("None".to_string())),
                 }
 
             }
@@ -187,7 +187,15 @@ fn verify_clusters(
             log::info!("Rpc node not present in geyzer: {}", rpc.pubkey);
         }
     }
-    geyzer_cluster
-        .keys()
-        .for_each(|node| log::info!("Geyzer node not present in RPC: {}", node));
+    geyzer_cluster.iter().for_each(|(key, node)| {
+        log::info!(
+            "Geyzer node not present in RPC: {} gossip:{} shred_version:{}",
+            key,
+            node.gossip
+                .as_ref()
+                .map(|addr| addr.to_string())
+                .unwrap_or("None".to_string()),
+            node.shred_version
+        )
+    });
 }
