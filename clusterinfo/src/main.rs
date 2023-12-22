@@ -11,8 +11,10 @@ use std::pin::pin;
 use std::str::FromStr;
 use yellowstone_grpc_client::GeyserGrpcClient;
 use yellowstone_grpc_proto::geyser::CommitmentLevel;
+use yellowstone_grpc_proto::prelude::subscribe_update_cluster_info;
 use yellowstone_grpc_proto::prelude::SubscribeUpdate;
 use yellowstone_grpc_proto::prelude::SubscribeUpdateClusterInfo;
+use yellowstone_grpc_proto::prelude::SubscribeUpdateClusterInfoUpdate;
 use yellowstone_grpc_proto::prelude::{subscribe_update::UpdateOneof, SubscribeRequestFilterSlots};
 use yellowstone_grpc_proto::tonic::Status;
 
@@ -38,7 +40,7 @@ async fn main() -> anyhow::Result<()> {
         let shred_version = TESTNET_SHRED_VERSION;
 
         async move {
-            run_loop(cluster_info_stream, shred_version).await;
+            run_loop(cluster_info_stream, shred_version, addr_verifier).await;
         }
     });
 
@@ -65,7 +67,7 @@ const MAINNET_SHRED_VERSION: u16 = 5106;
 const MAINNET_GENESIS_HASH: &str = "5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d";
 
 fn verify_node(
-    node: &SubscribeUpdateClusterInfo,
+    node: &SubscribeUpdateClusterInfoUpdate,
     addr_verifier: &SocketAddrSpace,
     shred_version: u16,
 ) -> bool {
@@ -77,20 +79,17 @@ fn verify_node(
         && node.shred_version as u16 == shred_version
 }
 
-async fn run_loop<S>(cluster_info_stream: S, shred_version: u16)
+async fn run_loop<S>(cluster_info_stream: S, shred_version: u16, socket_addr_space: SocketAddrSpace)
 where
     S: Stream<Item = SubscribeUpdateClusterInfo>,
 {
-    let mut node_list: HashMap<String, SubscribeUpdateClusterInfo> = HashMap::new();
+    let mut node_list: HashMap<String, SubscribeUpdateClusterInfoUpdate> = HashMap::new();
     let mut cluster_info_stream = pin!(cluster_info_stream);
 
     //Log current size of the cluster node info list size.
     let mut log_interval = tokio::time::interval(tokio::time::Duration::from_secs(15));
     //spik first tick
     log_interval.tick().await;
-
-    //TODO remove only to see how shred version change.
-    let socket_addr_space = SocketAddrSpace::new(false);
 
     loop {
         tokio::select! {
@@ -109,9 +108,20 @@ where
                 });
             }
             Some(update) = cluster_info_stream.next() => {
-                if verify_node(&update, &socket_addr_space, shred_version) {
-                    node_list.insert(update.pubkey.clone(), update);
+                match update.data {
+                    Some(subscribe_update_cluster_info::Data::Update(update)) => {
+                        log::trace!("{}, ClusterInfo update", update.pubkey);
+                        if verify_node(&update, &socket_addr_space, shred_version) {
+                            node_list.insert(update.pubkey.clone(), update);
+                        }
+                    }
+                    Some(subscribe_update_cluster_info::Data::Remove(pk)) => {
+                        log::info!("{}, ClusterInfo remove", pk);
+                        node_list.remove(&pk);
+                    }
+                    None => {}
                 }
+
                 // match verify_node(&update, &socket_addr_space, shred_version) {
                 //     true => {node_list.insert(update.pubkey.clone(), update);},
                 //     false=> log::info!("verify_node fail for:{} for addr:{}", update.pubkey, update.gossip.unwrap_or("None".to_string())),
@@ -192,7 +202,7 @@ fn get_rpc_cluster_info() -> anyhow::Result<Vec<solana_client::rpc_response::Rpc
 }
 
 fn verify_clusters(
-    mut geyzer_cluster: HashMap<String, SubscribeUpdateClusterInfo>,
+    mut geyzer_cluster: HashMap<String, SubscribeUpdateClusterInfoUpdate>,
     rpc_cluster: Vec<solana_client::rpc_response::RpcContactInfo>,
 ) {
     //verify if all rpc are in geyzer
