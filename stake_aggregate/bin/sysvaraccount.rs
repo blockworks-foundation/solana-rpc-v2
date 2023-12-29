@@ -62,7 +62,7 @@ async fn run_loop<F: Interceptor>(
     //subscribe Geyser grpc
     //slot subscription
     let mut slots = HashMap::new();
-    slots.insert("client".to_string(), SubscribeRequestFilterSlots {});
+    slots.insert("client".to_string(), SubscribeRequestFilterSlots::default());
 
     //account subscription
     let mut accounts_filter: HashMap<String, SubscribeRequestFilterAccounts> = HashMap::new();
@@ -87,6 +87,7 @@ async fn run_loop<F: Interceptor>(
             Default::default(), //block meta
             Some(CommitmentLevel::Confirmed),
             vec![],
+            None,
         )
         .await?;
 

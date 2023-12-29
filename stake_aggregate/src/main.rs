@@ -36,6 +36,7 @@ curl http://localhost:3001 -X POST -H "Content-Type: application/json" -d '
 
 use crate::bootstrap::BootstrapData;
 use crate::bootstrap::BootstrapEvent;
+use crate::epoch::BlockSlotVerifier;
 use crate::leader_schedule::LeaderScheduleData;
 use crate::stakestore::StakeStore;
 use crate::votestore::VoteStore;
@@ -55,6 +56,7 @@ use yellowstone_grpc_proto::geyser::SubscribeUpdateAccount;
 use yellowstone_grpc_proto::prelude::SubscribeRequestFilterAccounts;
 use yellowstone_grpc_proto::prelude::SubscribeRequestFilterBlocks;
 use yellowstone_grpc_proto::prelude::SubscribeRequestFilterBlocksMeta;
+use yellowstone_grpc_proto::prelude::SubscribeUpdateBlock;
 use yellowstone_grpc_proto::{
     prelude::{subscribe_update::UpdateOneof, SubscribeRequestFilterSlots},
     tonic::service::Interceptor,
@@ -184,7 +186,7 @@ async fn run_loop<F: Interceptor>(mut client: GeyserGrpcClient<F>) -> anyhow::Re
     //subscribe Geyser grpc
     //slot subscription
     let mut slots = HashMap::new();
-    slots.insert("client".to_string(), SubscribeRequestFilterSlots {});
+    slots.insert("client".to_string(), SubscribeRequestFilterSlots::default());
 
     //account subscription
     let mut accounts: HashMap<String, SubscribeRequestFilterAccounts> = HashMap::new();
@@ -195,8 +197,6 @@ async fn run_loop<F: Interceptor>(mut client: GeyserGrpcClient<F>) -> anyhow::Re
             owner: vec![
                 solana_sdk::stake::program::ID.to_string(),
                 solana_sdk::vote::program::ID.to_string(),
-                solana_sdk::sysvar::stake_history::ID.to_string(),
-                //                solana_sdk::system_program::ID.to_string(),
             ],
             filters: vec![],
         },
@@ -230,6 +230,7 @@ async fn run_loop<F: Interceptor>(mut client: GeyserGrpcClient<F>) -> anyhow::Re
             Default::default(), //block meta
             Some(CommitmentLevel::Confirmed),
             vec![],
+            None,
         )
         .await?;
 
@@ -254,11 +255,13 @@ async fn run_loop<F: Interceptor>(mut client: GeyserGrpcClient<F>) -> anyhow::Re
 
     //For DEBUG TODO remove:
     //start stake verification loop
-    let mut stake_verification_sender =
-        crate::stakestore::start_stake_verification_loop(RPC_URL.to_string()).await;
+    // let mut stake_verification_sender =
+    //     crate::stakestore::start_stake_verification_loop(RPC_URL.to_string()).await;
 
-    //TODO remove. Store parent hash to see if we don't miss a block.
-    let mut parent_block_slot = None;
+    //use  to process block at confirm slot.
+    //at confirm  slot are send before the block.
+    //Verify  that  the  last confirmed slot receive  is the  block slot.
+    let mut block_slot_verifier = BlockSlotVerifier::new();
     loop {
         tokio::select! {
             Some(req) = request_rx.recv() => {
@@ -409,6 +412,12 @@ async fn run_loop<F: Interceptor>(mut client: GeyserGrpcClient<F>) -> anyhow::Re
                                             }
                                         }
 
+                                        if let CommitmentLevel::Confirmed = slot.status() {
+                                            log::trace!("Receive confirmed slot:{}", slot.slot);
+                                            if let  Some((slot,  block)) =  block_slot_verifier.process_slot(slot.slot) {
+                                                process_block(block, slot);
+                                            }
+                                        }
                                     }
                                     Some(UpdateOneof::BlockMeta(block_meta)) => {
                                         log::info!("Receive Block Meta at slot: {}", block_meta.slot);
@@ -420,49 +429,8 @@ async fn run_loop<F: Interceptor>(mut client: GeyserGrpcClient<F>) -> anyhow::Re
                                             block.parent_slot,
                                         );
 
-                                        //TODO remove; Detect missing block
-                                        if let Some(parent_block_slot) = parent_block_slot {
-                                            if parent_block_slot != block.parent_slot {
-                                                log::error!("Bad parent slot stored:{} block:{}, miss a block"
-                                                    ,parent_block_slot,block.parent_slot
-                                                );
-                                            }
-                                        }
-
-                                        parent_block_slot = Some(block.slot);
-
-                                        //parse to detect stake merge tx.
-                                        //first in the main thread then in a specific thread.
-                                        let stake_public_key: Vec<u8> = solana_sdk::stake::program::id().to_bytes().to_vec();
-                                        for notif_tx in block.transactions {
-                                            if !notif_tx.is_vote {
-                                                if let Some(message) = notif_tx.transaction.and_then(|tx| tx.message) {
-                                                    for instruction in message.instructions {
-                                                        //filter stake tx
-                                                        if message.account_keys[instruction.program_id_index as usize] ==  stake_public_key {
-                                                            let source_bytes: [u8; 64] = notif_tx.signature[..solana_sdk::signature::SIGNATURE_BYTES]
-                                                                .try_into()
-                                                                .unwrap();
-                                                            log::info!("New stake Tx sign:{} at block slot:{:?} current_slot:{} accounts:{:?}"
-                                                                , solana_sdk::signature::Signature::from(source_bytes).to_string()
-                                                                , block.slot
-                                                                , current_epoch_state.current_slot.confirmed_slot
-                                                                , instruction.accounts
-                                                            );
-                                                            let program_index = instruction.program_id_index;
-                                                            crate::stakestore::process_stake_tx_message(
-                                                                &mut stake_verification_sender,
-                                                                &mut stakestore
-                                                                , &message.account_keys
-                                                                , instruction
-                                                                , program_index
-                                                                , block.slot
-                                                                , current_epoch_state.current_epoch_end_slot(),
-                                                            ).await;
-                                                        }
-                                                    }
-                                                }
-                                            }
+                                        if let  Some((slot,  block)) =  block_slot_verifier.process_block(block) {
+                                            process_block(block, slot);
                                         }
 
                                     }
@@ -507,6 +475,42 @@ async fn run_loop<F: Interceptor>(mut client: GeyserGrpcClient<F>) -> anyhow::Re
     }
 
     Ok(())
+}
+
+fn process_block(block: SubscribeUpdateBlock, confirmed_slot: Slot) {
+    //parse to detect stake merge tx.
+    //first in the main thread then in a specific thread.
+    let stake_public_key: Vec<u8> = solana_sdk::stake::program::id().to_bytes().to_vec();
+    for notif_tx in block.transactions {
+        if !notif_tx.is_vote {
+            if let Some(message) = notif_tx.transaction.and_then(|tx| tx.message) {
+                for instruction in message.instructions {
+                    //filter stake tx
+                    if message.account_keys[instruction.program_id_index as usize]
+                        == stake_public_key
+                    {
+                        let source_bytes: [u8; 64] = notif_tx.signature
+                            [..solana_sdk::signature::SIGNATURE_BYTES]
+                            .try_into()
+                            .unwrap();
+                        log::info!(
+                            "New stake Tx sign:{} at block slot:{:?} current_slot:{} accounts:{:?}",
+                            solana_sdk::signature::Signature::from(source_bytes).to_string(),
+                            block.slot,
+                            confirmed_slot,
+                            instruction.accounts
+                        );
+                        let program_index = instruction.program_id_index;
+                        crate::stakestore::process_stake_tx_message(
+                            &message.account_keys,
+                            instruction,
+                            program_index,
+                        );
+                    }
+                }
+            }
+        }
+    }
 }
 
 #[derive(Debug)]

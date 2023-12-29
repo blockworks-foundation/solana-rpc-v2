@@ -346,19 +346,6 @@ pub async fn start_stake_verification_loop(
     request_tx
 }
 
-async fn send_verification(
-    _stake_sender: &mut Sender<(String, Pubkey, Option<StoredStake>)>,
-    _stakestore: &mut StakeStore,
-    _instr: &str,
-    _stake_pybkey: Pubkey,
-) {
-    // let current_stake = stakestore.stakes.get(&stake_pybkey).cloned();
-    // stake_sender
-    //     .send((instr.to_string(), stake_pybkey, current_stake))
-    //     .await
-    //     .unwrap();
-}
-
 fn verify_account_len(account_keys: &[Pubkey], instr_accounts: &[u8], indexes: Vec<usize>) -> bool {
     !indexes
         .into_iter()
@@ -367,15 +354,11 @@ fn verify_account_len(account_keys: &[Pubkey], instr_accounts: &[u8], indexes: V
         .is_some()
 }
 
-pub async fn process_stake_tx_message(
-    stake_sender: &mut Sender<(String, Pubkey, Option<StoredStake>)>,
-    stakestore: &mut StakeStore,
+pub fn process_stake_tx_message(
     account_keys_vec: &[Vec<u8>],
     instruction: CompiledInstruction,
     //for debug and trace purpose.
     program_id_index: u32,
-    _tx_slot: Slot,
-    _current_end_epoch_slot: u64,
 ) {
     //for tracing purpose
     let account_keys: Vec<Pubkey> = account_keys_vec
@@ -427,14 +410,6 @@ pub async fn process_stake_tx_message(
             } else {
                 log::warn!("StakeInstruction::Initialize authorized:{authorized} lockup:{lockup} Index error in instruction:{:?}",  instruction.accounts);
             }
-
-            send_verification(
-                stake_sender,
-                stakestore,
-                "Initialize",
-                account_keys[instruction.accounts[0] as usize],
-            )
-            .await;
         }
         StakeInstruction::Authorize(new_authorized, authority_type) => {
             if !verify_account_len(&account_keys, &instruction.accounts, vec![0, 1, 2]) {
@@ -458,14 +433,6 @@ pub async fn process_stake_tx_message(
                 )
             });
             log::info!("StakeInstruction::Authorize value:{value} custodian:{custodian:?}");
-
-            send_verification(
-                stake_sender,
-                stakestore,
-                "Authorize",
-                account_keys[instruction.accounts[0] as usize],
-            )
-            .await;
         }
         StakeInstruction::DelegateStake => {
             if !verify_account_len(&account_keys, &instruction.accounts, vec![0, 1, 2, 3, 4, 5]) {
@@ -484,14 +451,6 @@ pub async fn process_stake_tx_message(
                 "stakeAuthority": account_keys[instruction.accounts[5] as usize].to_string(),
             });
             log::info!("StakeInstruction::DelegateStake infos:{info}");
-
-            send_verification(
-                stake_sender,
-                stakestore,
-                "DelegateStake",
-                account_keys[instruction.accounts[0] as usize],
-            )
-            .await;
         }
         StakeInstruction::Split(lamports) => {
             if !verify_account_len(&account_keys, &instruction.accounts, vec![0, 1, 2]) {
@@ -508,14 +467,6 @@ pub async fn process_stake_tx_message(
                 "lamports": lamports,
             });
             log::info!("StakeInstruction::Split infos:{info}");
-
-            send_verification(
-                stake_sender,
-                stakestore,
-                "Split",
-                account_keys[instruction.accounts[0] as usize],
-            )
-            .await;
         }
         StakeInstruction::Withdraw(lamports) => {
             if !verify_account_len(&account_keys, &instruction.accounts, vec![0, 1, 2, 3, 4]) {
@@ -536,14 +487,6 @@ pub async fn process_stake_tx_message(
             let custodian = (instruction.accounts.len() >= 6)
                 .then(|| json!(account_keys[instruction.accounts[5] as usize].to_string()));
             log::info!("StakeInstruction::Withdraw custodian:{custodian:?}infos:{info}");
-
-            send_verification(
-                stake_sender,
-                stakestore,
-                "Withdraw",
-                account_keys[instruction.accounts[0] as usize],
-            )
-            .await;
         }
         StakeInstruction::Deactivate => {
             if !verify_account_len(&account_keys, &instruction.accounts, vec![0, 1, 2]) {
@@ -585,14 +528,6 @@ pub async fn process_stake_tx_message(
                 "custodian": account_keys[instruction.accounts[1] as usize].to_string(),
             });
             log::info!("StakeInstruction::SetLockup unixTimestamp:{unix_timestamp} epoch:{epoch} custodian:{custodian} infos:{info}");
-
-            send_verification(
-                stake_sender,
-                stakestore,
-                "SetLockup",
-                account_keys[instruction.accounts[0] as usize],
-            )
-            .await;
         }
         StakeInstruction::AuthorizeWithSeed(args) => {
             if !verify_account_len(&account_keys, &instruction.accounts, vec![0, 1]) {
@@ -615,14 +550,6 @@ pub async fn process_stake_tx_message(
             let custodian = (instruction.accounts.len() >= 4)
                 .then(|| json!(account_keys[instruction.accounts[3] as usize].to_string()));
             log::info!("StakeInstruction::AuthorizeWithSeed clockSysvar:{clock_sysvar:?} custodian:{custodian:?} infos:{info}");
-
-            send_verification(
-                stake_sender,
-                stakestore,
-                "AuthorizeWithSeed",
-                account_keys[instruction.accounts[0] as usize],
-            )
-            .await;
         }
         StakeInstruction::InitializeChecked => {
             if !verify_account_len(&account_keys, &instruction.accounts, vec![0, 1, 2, 3]) {
@@ -639,14 +566,6 @@ pub async fn process_stake_tx_message(
                 "withdrawer": account_keys[instruction.accounts[3] as usize].to_string(),
             });
             log::info!("StakeInstruction::InitializeChecked infos:{info}");
-
-            send_verification(
-                stake_sender,
-                stakestore,
-                "InitializeChecked",
-                account_keys[instruction.accounts[0] as usize],
-            )
-            .await;
         }
         StakeInstruction::AuthorizeChecked(authority_type) => {
             if !verify_account_len(&account_keys, &instruction.accounts, vec![0, 1, 2, 3]) {
@@ -666,14 +585,6 @@ pub async fn process_stake_tx_message(
             let custodian = (instruction.accounts.len() >= 5)
                 .then(|| json!(account_keys[instruction.accounts[4] as usize].to_string()));
             log::info!("StakeInstruction::AuthorizeChecked custodian:{custodian:?} infos:{info}");
-
-            send_verification(
-                stake_sender,
-                stakestore,
-                "AuthorizeChecked",
-                account_keys[instruction.accounts[0] as usize],
-            )
-            .await;
         }
         StakeInstruction::AuthorizeCheckedWithSeed(args) => {
             if !verify_account_len(&account_keys, &instruction.accounts, vec![0, 1, 2, 3]) {
@@ -697,14 +608,6 @@ pub async fn process_stake_tx_message(
             log::info!(
                 "StakeInstruction::AuthorizeCheckedWithSeed custodian:{custodian:?} infos:{info}"
             );
-
-            send_verification(
-                stake_sender,
-                stakestore,
-                "AuthorizeCheckedWithSeed",
-                account_keys[instruction.accounts[0] as usize],
-            )
-            .await;
         }
         StakeInstruction::SetLockupChecked(lockup_args) => {
             if !verify_account_len(&account_keys, &instruction.accounts, vec![0, 1, 2]) {
@@ -729,14 +632,6 @@ pub async fn process_stake_tx_message(
                 "custodian": account_keys[instruction.accounts[1] as usize].to_string(),
             });
             log::info!("StakeInstruction::SetLockupChecked unixTimestamp:{unix_timestamp} epoch:{epoch} custodian:{custodian:?} infos:{info}");
-
-            send_verification(
-                stake_sender,
-                stakestore,
-                "SetLockupChecked",
-                account_keys[instruction.accounts[0] as usize],
-            )
-            .await;
         }
         StakeInstruction::GetMinimumDelegation => {
             log::info!("StakeInstruction::GetMinimumDelegation");
@@ -755,14 +650,6 @@ pub async fn process_stake_tx_message(
                 "referenceVoteAccount": account_keys[instruction.accounts[2] as usize].to_string(),
             });
             log::info!("StakeInstruction::DeactivateDelinquent infos:{info}");
-
-            send_verification(
-                stake_sender,
-                stakestore,
-                "DeactivateDelinquent",
-                account_keys[instruction.accounts[0] as usize],
-            )
-            .await;
         }
         StakeInstruction::Redelegate => {
             if !verify_account_len(&account_keys, &instruction.accounts, vec![0, 1, 2, 3, 4]) {
@@ -780,14 +667,6 @@ pub async fn process_stake_tx_message(
                 "stakeAuthority": account_keys[instruction.accounts[4] as usize].to_string(),
             });
             log::info!("StakeInstruction::Redelegate infos:{info}");
-
-            send_verification(
-                stake_sender,
-                stakestore,
-                "Redelegate",
-                account_keys[instruction.accounts[0] as usize],
-            )
-            .await;
         }
         StakeInstruction::Merge => {
             if !verify_account_len(&account_keys, &instruction.accounts, vec![0, 1, 2, 3, 4]) {
@@ -827,22 +706,6 @@ pub async fn process_stake_tx_message(
             //     },
             //     current_end_epoch_slot,
             // );
-
-            // send_verification(
-            //     stake_sender,
-            //     stakestore,
-            //     "Merge Destination",
-            //     account_keys[instruction.accounts[0] as usize],
-            // )
-            // .await;
-
-            // send_verification(
-            //     stake_sender,
-            //     stakestore,
-            //     "Merge Source",
-            //     account_keys[instruction.accounts[1] as usize],
-            // )
-            // .await;
         }
     }
 }
